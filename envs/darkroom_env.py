@@ -61,7 +61,9 @@ class DarkroomEnv(BaseEnv):
         self.state, reward = self.transit(self.state, action)
         self.current_step += 1
         done = self.current_step >= self.horizon
-        return self.state.copy(), reward, done, {}
+        return self.state.copy(), reward, done, {
+            'goal': self.goal.copy(),
+        }
 
     def get_obs(self):
         return self.state.copy()
@@ -145,7 +147,9 @@ class DarkroomEnvVec(BaseEnv):
         self.states, rewards = self.transit(self.states, actions)
         self.current_step += 1
         dones = self.current_step >= self.horizon
-        return self.states.copy(), rewards, dones, {}
+        return self.states.copy(), rewards, dones, {
+            'goals': self._goals.copy(),
+        }
 
     def opt_action(self, states):
         actions = np.array([env.opt_action(state) for env, state in zip(self._envs, states)])

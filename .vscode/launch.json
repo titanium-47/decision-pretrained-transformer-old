@@ -1,0 +1,13 @@
+{
+    "configurations": [
+        {
+            "name": "Debug train_context_accumulator",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train_context_accumulator.py",
+            "console": "integratedTerminal",
+            "args": "--env darkroom-easy --log_wandb --wandb_project brightroom-astroid --gradient_clip",
+            "justMyCode": "false"
+        }
+    ]
+}

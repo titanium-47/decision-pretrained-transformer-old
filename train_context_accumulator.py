@@ -10,6 +10,8 @@ At each iteration:
 
 import torch.multiprocessing as mp
 
+from encoders import GoalDeterministicEncoder, GoalInformationBottleneckEncoder, NullEncoder
+
 if mp.get_start_method(allow_none=True) is None:
     mp.set_start_method("spawn", force=True)
 
@@ -169,7 +171,9 @@ def train_step(
         
         for batch in train_loader:
             loss, stats = forward(batch)
-            
+
+            encoder_loss = model.get_encoder_loss(batch)
+            loss += encoder_loss * args.kl_loss_weight
             optimizer.zero_grad()
             loss.backward()
             
@@ -195,6 +199,7 @@ def train_step(
             
             for k, v in stats.items():
                 train_stats[k].append(v)
+            train_stats['encoder_loss'].append(encoder_loss.item())
         
         if args.log_wandb:
             for k, v in train_stats.items():
@@ -261,7 +266,7 @@ if __name__ == "__main__":
     
     # Data
     parser.add_argument("--dataset_size", type=int, default=10000)
-    parser.add_argument("--dagger_steps", type=int, default=3)
+    parser.add_argument("--dagger_steps", type=int, default=5)
     parser.add_argument("--n_envs", type=int, default=10000)
     
     # Evaluation
@@ -277,7 +282,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--num_epochs", type=int, default=100)
+    parser.add_argument("--num_epochs", type=int, default=1)
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--gradient_clip", action="store_true")
     parser.add_argument("--eval_interval", type=float, default=0.1)
@@ -290,6 +295,8 @@ if __name__ == "__main__":
     
     # Paths
     parser.add_argument("--save_dir", type=str, default="./context_results")
+    parser.add_argument("--encoder_type", type=str, choices=["information_bottleneck", "deterministic", "null"], default="information_bottleneck")
+    parser.add_argument("--kl_loss_weight", type=float, default=100.0)
 
     args = parser.parse_args()
 
@@ -331,6 +338,11 @@ if __name__ == "__main__":
 
     # Model configuration (discrete actions only)
     model_horizon = env_horizon * args.dagger_steps
+    encoder_class_map = {
+        'information_bottleneck': GoalInformationBottleneckEncoder,
+        'deterministic': GoalDeterministicEncoder,
+        'null': NullEncoder,
+    }
     model_args = {
         "horizon": model_horizon,
         "state_dim": state_dim,
@@ -343,12 +355,18 @@ if __name__ == "__main__":
         "test": False,
         "continuous_action": False,
         "gmm_heads": 1,
+        'encoder': {
+            'class': encoder_class_map[args.encoder_type],
+            'input_dim': 2,
+            'latent_dim': 16,
+        },
     }
     
     with open(os.path.join(save_dir, "model_args.pkl"), "wb") as f:
         pickle.dump(model_args, f)
     
     # Create model
+    
     model = DecisionTransformer(model_args).to(device)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 

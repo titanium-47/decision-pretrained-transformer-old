@@ -35,7 +35,7 @@ class BasePolicy:
         """Get action for given states."""
         raise NotImplementedError
 
-    def update_context(self, states, actions, rewards, dones):
+    def update_context(self, states, actions, rewards, dones, goals):
         """Update policy context with new transition."""
         pass
 
@@ -146,6 +146,7 @@ class TransformerPolicy(BasePolicy):
         self.context_actions = []
         self.context_rewards = []
         self.context_dones = []
+        self.context_goals = []
 
     def reset(self):
         """Clear context buffers."""
@@ -153,6 +154,7 @@ class TransformerPolicy(BasePolicy):
         self.context_actions = []
         self.context_rewards = []
         self.context_dones = []
+        self.context_goals = []
 
     def _get_context_tensors(self):
         """Convert context lists to tensors, trimmed to context_horizon."""
@@ -160,7 +162,7 @@ class TransformerPolicy(BasePolicy):
         actions = torch.from_numpy(np.stack(self.context_actions, axis=1)).float().to(device)
         rewards = torch.from_numpy(np.stack(self.context_rewards, axis=1)).float().to(device)
         dones = torch.from_numpy(np.stack(self.context_dones, axis=1)).float().to(device)
-        
+        goals = torch.from_numpy(np.stack(self.context_goals, axis=1)).float().to(device)
         # Trim to context horizon if needed
         if states.shape[1] > self.model.horizon - 1:
             if self.sliding_window:
@@ -169,6 +171,7 @@ class TransformerPolicy(BasePolicy):
                 actions = actions[:, -(self.context_horizon - 1):]
                 rewards = rewards[:, -(self.context_horizon - 1):]
                 dones = dones[:, -(self.context_horizon - 1):]
+                goals = goals[:, -(self.context_horizon - 1):]
             else:
                 # Trim to episode boundary
                 trimmed_dones = dones[:, -self.context_horizon:]
@@ -181,8 +184,8 @@ class TransformerPolicy(BasePolicy):
                 actions = actions[:, start_idx:]
                 rewards = rewards[:, start_idx:]
                 dones = dones[:, start_idx:]
-        
-        return states, actions, rewards, dones
+                goals = goals[:, start_idx:]
+        return states, actions, rewards, dones, goals
 
     @torch.no_grad()
     def get_action(self, states):
@@ -191,11 +194,11 @@ class TransformerPolicy(BasePolicy):
         current_states = torch.from_numpy(states).float().to(device)
         
         if len(self.context_states) < 1:
-            action_output = self.model.get_action(current_states, None, None, None, None)
+            action_output = self.model.get_action(current_states, None, None, None, None, None)
         else:
-            ctx_states, ctx_actions, ctx_rewards, ctx_dones = self._get_context_tensors()
+            ctx_states, ctx_actions, ctx_rewards, ctx_dones, ctx_goals = self._get_context_tensors()
             action_output = self.model.get_action(
-                current_states, ctx_states, ctx_actions, ctx_rewards, ctx_dones
+                current_states, ctx_states, ctx_actions, ctx_rewards, ctx_dones, ctx_goals
             )
         
         if self.continuous_action:
@@ -217,13 +220,13 @@ class TransformerPolicy(BasePolicy):
             actions[np.arange(batch_size), action_ids] = 1.0
             return actions
 
-    def update_context(self, states, actions, rewards, dones):
+    def update_context(self, states, actions, rewards, dones, goals):
         """Add new transition to context."""
         self.context_states.append(states)
         self.context_actions.append(actions)
         self.context_rewards.append(rewards)
         self.context_dones.append(dones)
-
+        self.context_goals.append(goals)
 
 class HybridPolicy(TransformerPolicy):
     """
@@ -278,8 +281,8 @@ class ContextAccumulationPolicy(TransformerPolicy):
             # Earlier episodes: use transformer
             return super().get_action(states)
 
-    def update_context(self, states, actions, rewards, dones):
-        super().update_context(states, actions, rewards, dones)
+    def update_context(self, states, actions, rewards, dones, goals):
+        super().update_context(states, actions, rewards, dones, goals)
         if np.any(dones):
             self.current_episode += 1
 

@@ -197,6 +197,8 @@ class SequenceDataset(torch.utils.data.Dataset):
             res['query_actions'] = convert_to_tensor(traj['query_actions'], store_gpu=self.store_gpu)
         if 'query_values' in traj:
             res['query_values'] = convert_to_tensor(traj['query_values'], store_gpu=self.store_gpu)
+        if 'goals' in traj:
+            res['goals'] = convert_to_tensor(traj['goals'], store_gpu=self.store_gpu)
 
         return res
 

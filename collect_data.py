@@ -40,6 +40,7 @@ def dagger_rollout(env, rollout_policy, horizon):
     expert_actions = []
     rewards = []
     dones_list = []
+    goals = []
 
     for t in range(horizon):
         # Get policy action
@@ -57,7 +58,7 @@ def dagger_rollout(env, rollout_policy, horizon):
             expert_action = env.opt_action(state)
 
         # Step environment
-        next_state, reward, done, _ = env.step(action)
+        next_state, reward, done, info = env.step(action)
         
         # Store transition
         states.append(state)
@@ -65,9 +66,10 @@ def dagger_rollout(env, rollout_policy, horizon):
         expert_actions.append(expert_action)
         rewards.append(reward)
         dones_list.append(done)
-        
+        goals.append(info['goals'])
+
         # Update policy context
-        rollout_policy.update_context(state, action, reward, done)
+        rollout_policy.update_context(state, action, reward, done, info['goals'])
         
         # Handle episode resets
         if np.any(done):
@@ -82,6 +84,7 @@ def dagger_rollout(env, rollout_policy, horizon):
         "expert_actions": np.stack(expert_actions, axis=1),
         "rewards": np.stack(rewards, axis=1),
         "dones": np.stack(dones_list, axis=1),
+        "goals": np.stack(goals, axis=1),
     }
     
     # Verify shapes
@@ -90,7 +93,7 @@ def dagger_rollout(env, rollout_policy, horizon):
     assert data["expert_actions"].shape == (n_envs, horizon, env.action_dim)
     assert data["rewards"].shape == (n_envs, horizon)
     assert data["dones"].shape == (n_envs, horizon)
-    
+    assert data["goals"].shape == (n_envs, horizon, 2)
     return data
 
 
@@ -118,7 +121,7 @@ def get_dagger_data(envs, rollout_policy, horizon):
                 "expert_actions": data["expert_actions"][k],
                 "rewards": data["rewards"][k],
                 "dones": data["dones"][k],
-                "goal": env._envs[k].goal,
+                "goals": data["goals"][k],
             }
             trajs.append(traj)
     return trajs

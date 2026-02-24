@@ -5,13 +5,19 @@ transformers.set_seed(0)
 from transformers import GPT2Config, GPT2Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 from torch.distributions import TransformedDistribution, TanhTransform
+from encoders import Encoder, GoalInformationBottleneckEncoder, GoalDeterministicEncoder, NullEncoder
 
-def get_model(model_type, horizon, state_dim, action_dim, continuous_action, gmm_heads=1):
+def get_model(model_type, horizon, state_dim, action_dim, continuous_action, encoder_type, gmm_heads=1):
     n_embd = 128
     n_head = 4
     n_layer = 4
     dropout = 0.1
     shuffle = True
+    encoder_class = {
+        'information_bottleneck': GoalInformationBottleneckEncoder,
+        'deterministic': GoalDeterministicEncoder,
+        'null': NullEncoder,
+    }
     config = {
         'horizon': horizon,
         'state_dim': state_dim,
@@ -25,6 +31,11 @@ def get_model(model_type, horizon, state_dim, action_dim, continuous_action, gmm
         'store_gpu': True,
         'continuous_action': continuous_action,
         'gmm_heads': gmm_heads,
+        'encoder': {
+            'class': encoder_class[encoder_type],
+            'input_dim': 2,
+            'latent_dim': 16,
+        },
     }
     if model_type == "decision_transformer":
         model = DecisionTransformer(config).to(device)
@@ -575,6 +586,7 @@ class DecisionTransformer(nn.Module):
         self.state_dim = self.config['state_dim']
         self.action_dim = self.config['action_dim']
         self.dropout = self.config['dropout']
+        self.goal_encoder = self.config['encoder']['class'](self.config['encoder']['input_dim'], self.config['encoder']['latent_dim'])
 
         gpt_config = GPT2Config(
             n_positions=self.horizon,
@@ -590,7 +602,7 @@ class DecisionTransformer(nn.Module):
         self.transformer = GPT2Model(gpt_config)
 
         self.embed_transition = nn.Linear(
-            self.state_dim + self.action_dim + 2, self.n_embd)
+            self.state_dim + self.action_dim + 2 + self.config['encoder']['latent_dim'], self.n_embd)
         self.embed_ln = nn.LayerNorm(self.n_embd)
         self.continuous_action = self.config['continuous_action']
         self.gmm_heads = self.config['gmm_heads']
@@ -614,6 +626,7 @@ class DecisionTransformer(nn.Module):
         states = x['states']
         actions = x['actions']
         rewards = x['rewards']
+        goals = x['goals']
         dones = x['dones']
         input_actions = torch.cat([
             torch.zeros(states.shape[0], 1, self.action_dim).to(device),
@@ -627,6 +640,7 @@ class DecisionTransformer(nn.Module):
             torch.zeros(states.shape[0], 1).to(device),
             dones[:, :-1],
         ], dim=1)
+        goal_embeds = self.goal_encoder(goals) # B x T x latent_dim
         position_ids = None
         if sample_time:
             # assert False, "Sampling time not supported."
@@ -636,7 +650,7 @@ class DecisionTransformer(nn.Module):
             initial_timestep = torch.randint(0, self.horizon - states.shape[1], (states.shape[0],), device=states.device)
             position_ids = position_ids + initial_timestep.unsqueeze(1)
 
-        inputs_ = torch.cat([states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1)], dim=2)
+        inputs_ = torch.cat([states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
         inputs = self.embed_transition(inputs_)
         inputs = self.embed_ln(inputs)
 
@@ -690,7 +704,7 @@ class DecisionTransformer(nn.Module):
         preds = self.pred_actions(transformer_outputs['last_hidden_state']) # B x T x A
         return preds, value_preds
     
-    def get_action(self, current_state, states, actions, rewards, dones, return_transformer_outputs=False):
+    def get_action(self, current_state, states, actions, rewards, dones, goals, return_transformer_outputs=False):
         # return_value = False
         # return self.debug_mlp(current_state)  # B x D -> B x A
         if states is None: # current_state is B x D
@@ -698,6 +712,7 @@ class DecisionTransformer(nn.Module):
             input_actions = torch.zeros(current_state.shape[0], 1, self.action_dim).to(device)
             input_rewards = torch.zeros(current_state.shape[0], 1).to(device)
             input_dones = torch.zeros(current_state.shape[0], 1).to(device)
+            input_goals = torch.zeros(current_state.shape[0], 1, 2).to(device)
         else: # states is B x T x D, actions is B x T x A, rewards is B x T, dones is B x T, current_state is B x D
             input_states = torch.cat([
                 states, current_state.unsqueeze(1)
@@ -714,13 +729,20 @@ class DecisionTransformer(nn.Module):
                 torch.zeros(states.shape[0], 1).to(device),
                 dones,
             ], dim=1) # B x (T+1)
+            input_goals = torch.cat([
+                torch.zeros(states.shape[0], 1, 2).to(device),
+                goals,
+            ], dim=1) # B x (T+1) x latent_dim
 
             input_states = input_states[:, -self.horizon:, :]  # Keep only the last horizon states
             input_actions = input_actions[:, -self.horizon:, :]
             input_rewards = input_rewards[:, -self.horizon:]
             input_dones = input_dones[:, -self.horizon:]
+            input_goals = input_goals[:, -self.horizon:, :]
         
-        inputs = torch.cat([input_states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1)], dim=2)
+        goal_embeds = self.goal_encoder(input_goals)
+
+        inputs = torch.cat([input_states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
         inputs = self.embed_transition(inputs)
         inputs = self.embed_ln(inputs)
         transformer_outputs = self.transformer(inputs_embeds=inputs)
@@ -765,6 +787,10 @@ class DecisionTransformer(nn.Module):
         if return_transformer_outputs:
             return preds[:, -1, :], transformer_outputs['last_hidden_state'][:, -1, :]
         return preds[:, -1, :]  # Return the last action
+
+    def get_encoder_loss(self, x):
+        goals = x['goals'].to(device)
+        return self.goal_encoder.compute_encoder_loss(goals)
 
 # from decision_transformer.gym.decision_transformer.models.trajectory_gpt2 import GPT2Model
 # from decision_transformer.gym.decision_transformer.models.model import TrajectoryModel
