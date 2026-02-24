@@ -266,7 +266,7 @@ if __name__ == "__main__":
     
     # Data
     parser.add_argument("--dataset_size", type=int, default=10000)
-    parser.add_argument("--dagger_steps", type=int, default=5)
+    parser.add_argument("--dagger_steps", type=int, default=10)
     parser.add_argument("--n_envs", type=int, default=10000)
     
     # Evaluation
@@ -282,10 +282,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--num_epochs", type=int, default=1)
+    parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--gradient_clip", action="store_true")
-    parser.add_argument("--eval_interval", type=float, default=0.1)
+    parser.add_argument("--eval_interval", type=float, default=0.5)
     parser.add_argument("--save_interval", type=float, default=0.1)
     
     # Logging
@@ -323,7 +323,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
     
     # Save directory
-    save_dir = os.path.join(args.save_dir, f"{args.exp_name}-{args.env_name}-seed{args.seed}")
+    save_dir = os.path.join(args.save_dir, f"{args.exp_name}-{args.env_name}-seed{args.seed}-kl-{args.kl_loss_weight}")
     os.makedirs(save_dir, exist_ok=True)
 
     # Create environments
@@ -481,7 +481,7 @@ if __name__ == "__main__":
         print(f"Evaluation complete - Final return: {eval_results['mean_returns'][-1]:.2f} ± {eval_results['std_returns'][-1]:.2f}")
         
         # Prepare for next step
-        current_horizon = env_horizon * (step_idx + 2)
+        current_horizon = env_horizon * (min(step_idx, 3) + 2) 
         
         # Create policy for data collection
         step_policy = get_rollout_policy(
