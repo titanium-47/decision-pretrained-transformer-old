@@ -481,7 +481,7 @@ if __name__ == "__main__":
         print(f"Evaluation complete - Final return: {eval_results['mean_returns'][-1]:.2f} ± {eval_results['std_returns'][-1]:.2f}")
         
         # Prepare for next step
-        current_horizon = env_horizon * (min(step_idx, 3) + 2) 
+        current_horizon = env_horizon * (min(step_idx, 2) + 2) 
         
         # Create policy for data collection
         step_policy = get_rollout_policy(

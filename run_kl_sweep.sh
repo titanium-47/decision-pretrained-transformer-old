@@ -3,7 +3,7 @@
 # Edit the KL_WEIGHTS array below to set which values to sweep.
 
 # Configure kl_loss_weight values to sweep (one run per value)
-KL_WEIGHTS=(0.05 0.1 100.0)
+KL_WEIGHTS=(0.001 0.002)
 
 # Optional: pass through any extra args to the training script (e.g. --exp_name my_run)
 # Either pass on the command line: ./run_kl_sweep.sh --log_wandb --wandb_project kl-sweep-brightroom

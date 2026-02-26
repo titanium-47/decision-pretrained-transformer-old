@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=klsweep
 #SBATCH --account=weirdlab
-#SBATCH --partition=gpu-l40s
+#SBATCH --partition=gpu-l40
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=100G
