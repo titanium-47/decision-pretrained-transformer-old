@@ -125,3 +125,28 @@ class NullEncoder(Encoder):
     
     def compute_encoder_loss(self, x):
         return torch.tensor(0.0, device=x.device)
+
+class DiffusionForwardNoiseEncoder(Encoder):
+    def __init__(self, input_dim, latent_dim, alpha=0.8):
+        super().__init__(input_dim, latent_dim)
+        self.alpha = alpha
+        self.latent_dim = latent_dim
+        self.input_dim = input_dim
+        self.embedding = nn.Linear(input_dim, latent_dim)
+        self.bn = nn.BatchNorm1d(input_dim)
+
+    def forward(self, x, eps=None):
+        B, T, _ = x.shape
+        x = x.reshape(-1, self.input_dim)
+        x = self.bn(x)
+        x = x.reshape(B, T, -1)
+        return self._diffusion_forward_noise(self.embedding(x))
+
+    def _diffusion_forward_noise(self, x):
+        if self.training:
+            return self.alpha * x + (1 - self.alpha) * torch.randn_like(x, device=x.device)
+        else:
+            return self.alpha * x
+
+    def compute_encoder_loss(self, x):
+        return torch.tensor(0.0, device=x.device)

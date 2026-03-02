@@ -10,7 +10,7 @@ At each iteration:
 
 import torch.multiprocessing as mp
 
-from encoders import GoalDeterministicEncoder, GoalInformationBottleneckEncoder, NullEncoder
+from encoders import GoalDeterministicEncoder, GoalInformationBottleneckEncoder, NullEncoder, DiffusionForwardNoiseEncoder
 
 if mp.get_start_method(allow_none=True) is None:
     mp.set_start_method("spawn", force=True)
@@ -295,8 +295,9 @@ if __name__ == "__main__":
     
     # Paths
     parser.add_argument("--save_dir", type=str, default="./context_results")
-    parser.add_argument("--encoder_type", type=str, choices=["information_bottleneck", "deterministic", "null"], default="information_bottleneck")
+    parser.add_argument("--encoder_type", type=str, choices=["information_bottleneck", "deterministic", "diffusion_forward_noise", "null"], default="diffusion_forward_noise")
     parser.add_argument("--kl_loss_weight", type=float, default=100.0)
+    parser.add_argument("--state_encoder_type", type=str, choices=["diffusion_forward_noise", "null"], default="diffusion_forward_noise")
 
     args = parser.parse_args()
 
@@ -342,6 +343,7 @@ if __name__ == "__main__":
         'information_bottleneck': GoalInformationBottleneckEncoder,
         'deterministic': GoalDeterministicEncoder,
         'null': NullEncoder,
+        'diffusion_forward_noise': DiffusionForwardNoiseEncoder
     }
     model_args = {
         "horizon": model_horizon,
@@ -358,7 +360,12 @@ if __name__ == "__main__":
         'encoder': {
             'class': encoder_class_map[args.encoder_type],
             'input_dim': 2,
-            'latent_dim': 16,
+            'latent_dim': 2,
+        },
+        'state_encoder': {
+            'class': encoder_class_map[args.state_encoder_type],
+            'input_dim': state_dim,
+            'latent_dim': state_dim,
         },
     }
     

@@ -587,6 +587,7 @@ class DecisionTransformer(nn.Module):
         self.action_dim = self.config['action_dim']
         self.dropout = self.config['dropout']
         self.goal_encoder = self.config['encoder']['class'](self.config['encoder']['input_dim'], self.config['encoder']['latent_dim'])
+        self.state_encoder = self.config['state_encoder']['class'](self.config['state_encoder']['input_dim'], self.config['state_encoder']['latent_dim'])
 
         gpt_config = GPT2Config(
             n_positions=self.horizon,
@@ -602,7 +603,7 @@ class DecisionTransformer(nn.Module):
         self.transformer = GPT2Model(gpt_config)
 
         self.embed_transition = nn.Linear(
-            self.state_dim + self.action_dim + 2 + self.config['encoder']['latent_dim'], self.n_embd)
+            self.config['state_encoder']['latent_dim'] + self.action_dim + 2 + self.config['encoder']['latent_dim'], self.n_embd)
         self.embed_ln = nn.LayerNorm(self.n_embd)
         self.continuous_action = self.config['continuous_action']
         self.gmm_heads = self.config['gmm_heads']
@@ -628,6 +629,7 @@ class DecisionTransformer(nn.Module):
         rewards = x['rewards']
         goals = x['goals']
         dones = x['dones']
+        state_embeds = self.state_encoder(states)
         input_actions = torch.cat([
             torch.zeros(states.shape[0], 1, self.action_dim).to(device),
             actions[:, :-1, :],
@@ -650,7 +652,7 @@ class DecisionTransformer(nn.Module):
             initial_timestep = torch.randint(0, self.horizon - states.shape[1], (states.shape[0],), device=states.device)
             position_ids = position_ids + initial_timestep.unsqueeze(1)
 
-        inputs_ = torch.cat([states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
+        inputs_ = torch.cat([state_embeds, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
         inputs = self.embed_transition(inputs_)
         inputs = self.embed_ln(inputs)
 
