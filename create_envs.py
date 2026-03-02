@@ -52,20 +52,30 @@ def create_darkroom_env(env_name, dataset_size, n_envs):
     # Generate all grid positions as goals
     goals = np.array([[i, j] for i in range(dim) for j in range(dim)])
     np.random.RandomState(seed=0).shuffle(goals)
-    
-    # 80/20 train/test split
-    split_idx = int(0.8 * len(goals))
-    train_goals = goals[:split_idx]
-    test_goals = goals[split_idx:]
-    
+
+    #  # 80/20 train/test split
+    # split_idx = int(0.8 * len(goals))
+    # train_goals = goals[:split_idx]
+    # test_goals = goals[split_idx:]
+    # Train/test split rule: any goal on row/column 9 is test.
+    is_test_goal = (goals[:, 0] == 9) | (goals[:, 1] == 9)
+    train_goals = goals[~is_test_goal]
+    test_goals = goals[is_test_goal]
+
+    print(f"Train goals: {train_goals}")
+    print(f"Test goals: {test_goals}")
     # Repeat goals to match dataset_size
     n_repeats = max(1, dataset_size // len(goals))
     train_goals = np.repeat(train_goals, n_repeats, axis=0)
     test_goals = np.repeat(test_goals, n_repeats, axis=0)
     
     # Eval goals: use test goals, ensure at least 100
-    eval_factor = max(1, 100 // len(goals[split_idx:]))
-    eval_goals = np.tile(goals[split_idx:], (eval_factor, 1))
+    #  eval_factor = max(1, 100 // len(goals[split_idx:]))
+    # eval_goals = np.tile(goals[split_idx:], (eval_factor, 1))
+    eval_factor = max(1, 100 // len(test_goals))
+    eval_goals = np.tile(test_goals, (eval_factor, 1))
+
+    print(f"Eval goals: {eval_goals}")
 
     # Create single environments
     train_envs = [DarkroomEnv(dim, goal, horizon) for goal in train_goals]

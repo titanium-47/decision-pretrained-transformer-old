@@ -323,7 +323,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
     
     # Save directory
-    save_dir = os.path.join(args.save_dir, f"{args.exp_name}-{args.env_name}-seed{args.seed}-kl-{args.kl_loss_weight}")
+    save_dir = os.path.join(args.save_dir, f"{args.exp_name}-{args.env_name}-seed{args.seed}-side-ood-kl-{args.kl_loss_weight}")
     os.makedirs(save_dir, exist_ok=True)
 
     # Create environments
