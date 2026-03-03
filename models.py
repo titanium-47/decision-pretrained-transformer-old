@@ -743,8 +743,9 @@ class DecisionTransformer(nn.Module):
             input_goals = input_goals[:, -self.horizon:, :]
         
         goal_embeds = self.goal_encoder(input_goals)
+        state_embeds = self.state_encoder(input_states)
 
-        inputs = torch.cat([input_states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
+        inputs = torch.cat([state_embeds, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
         inputs = self.embed_transition(inputs)
         inputs = self.embed_ln(inputs)
         transformer_outputs = self.transformer(inputs_embeds=inputs)

@@ -6,7 +6,7 @@
             "request": "launch",
             "program": "train_context_accumulator.py",
             "console": "integratedTerminal",
-            "args": "--env darkroom-easy --log_wandb --wandb_project brightroom-astroid --gradient_clip",
+            "args": "--num_epochs 1 --env darkroom-easy --log_wandb --wandb_project brightroom-astroid --gradient_clip --state_encoder_type diffusion_forward_noise --encoder_type diffusion_forward_noise",
             "justMyCode": "false"
         }
     ]

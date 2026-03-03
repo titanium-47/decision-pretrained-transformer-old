@@ -133,7 +133,7 @@ class DiffusionForwardNoiseEncoder(Encoder):
         self.latent_dim = latent_dim
         self.input_dim = input_dim
         self.embedding = nn.Linear(input_dim, latent_dim)
-        self.bn = nn.BatchNorm1d(input_dim)
+        self.bn = nn.BatchNorm1d(input_dim, affine=False)
 
     def forward(self, x, eps=None):
         B, T, _ = x.shape

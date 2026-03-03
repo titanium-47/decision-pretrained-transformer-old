@@ -118,7 +118,6 @@ def train_step(
 
     best_test_loss = float('inf')
     best_model = None
-    
     def forward(batch):
         """Compute loss for a batch (discrete actions only)."""
         batch = {k: v.to(device) for k, v in batch.items()}
@@ -168,7 +167,6 @@ def train_step(
         # Training
         model.train()
         train_stats = defaultdict(list)
-        
         for batch in train_loader:
             loss, stats = forward(batch)
 
@@ -265,9 +263,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     
     # Data
-    parser.add_argument("--dataset_size", type=int, default=10000)
+    parser.add_argument("--dataset_size", type=int, default=1000)
     parser.add_argument("--dagger_steps", type=int, default=10)
-    parser.add_argument("--n_envs", type=int, default=10000)
+    parser.add_argument("--n_envs", type=int, default=1000)
     
     # Evaluation
     parser.add_argument("--eval_episodes", type=int, default=40, help="Number of episodes for evaluation")
