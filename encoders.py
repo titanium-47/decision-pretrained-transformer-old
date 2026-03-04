@@ -160,3 +160,18 @@ class NoOpEncoder(Encoder):
     
     def compute_encoder_loss(self, x):
         return torch.tensor(0.0, device=x.device)
+
+class BatchNormEncoder(Encoder):
+    def __init__(self, input_dim, latent_dim):
+        super().__init__(input_dim, latent_dim)
+        self.bn = nn.BatchNorm1d(input_dim, affine=False)
+
+    def forward(self, x, eps=None):
+        B, T, _ = x.shape
+        x = x.reshape(-1, self.input_dim)
+        x = self.bn(x)
+        x = x.reshape(B, T, -1)
+        return x
+    
+    def compute_encoder_loss(self, x):
+        return torch.tensor(0.0, device=x.device)

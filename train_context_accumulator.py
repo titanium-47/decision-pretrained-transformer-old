@@ -30,7 +30,7 @@ from PIL import Image
 from get_rollout_policy import TransformerPolicy
 from models import DecisionTransformer
 from maze_env import make_maze_envs, _render_grid_obs
-from encoders import GoalInformationBottleneckEncoder, GoalDeterministicEncoder, NullEncoder, DiffusionForwardNoiseEncoder, NoOpEncoder
+from encoders import GoalInformationBottleneckEncoder, GoalDeterministicEncoder, NullEncoder, DiffusionForwardNoiseEncoder, NoOpEncoder, BatchNormEncoder
 
 
 # ---------------------------------------------------------------------------
@@ -759,9 +759,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--state_encoder_type",
         type=str,
-        default="noop",
+        default="batch_norm",
         choices=["information_bottleneck", "deterministic", "null",
-                 "diffusion_forward_noise", "noop"],
+                 "diffusion_forward_noise", "noop", "batch_norm"],
     )
     parser.add_argument("--alpha", type=float, default=1.0)
 
@@ -835,7 +835,8 @@ if __name__ == "__main__":
         'deterministic': GoalDeterministicEncoder,
         'null': NullEncoder,
         'diffusion_forward_noise': DiffusionForwardNoiseEncoder,
-        'noop': NoOpEncoder
+        'noop': NoOpEncoder,
+        'batch_norm': BatchNormEncoder
     }
     env_horizon = 500  # procgen maze max episode steps (easy mode)
     print(f"Obs shape: {obs_shape}, Action dim: {action_dim}, "
