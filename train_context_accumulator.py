@@ -1054,7 +1054,7 @@ if __name__ == "__main__":
         # 4. Evaluate
         eval_save_dir = os.path.join(
             save_dir, f"dagger_step_{step_idx}", "eval")
-        if step_idx%10 == 0 or step_idx == args.dagger_steps - 1:
+        if step_idx%2 == 0 or step_idx == args.dagger_steps - 1:
             mean_ret, std_ret, success_rate = evaluate_policy_on_envs_procgen(
                 eval_envs=eval_env,
                 # eval_envs=train_env,  # evaluate on training envs to see improvement across steps
