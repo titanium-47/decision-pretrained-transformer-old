@@ -652,6 +652,10 @@ class DecisionTransformerCnn(nn.Module):
         )
         self.transformer = GPT2Model(gpt2_config)
         obs_shape = config['obs']  # (H, W, C), (15x15x3)
+        self.obs_h = obs_shape[0]
+        self.obs_w = obs_shape[1]
+        self.pos_x_denom = max(1.0, float(self.obs_w - 1))
+        self.pos_y_denom = max(1.0, float(self.obs_h - 1))
         self.cnn_encoder = nn.Sequential(
             # nn.Conv2d(obs_shape[2], 64, kernel_size=3, stride=1),  # (H/2, W/2, 64)
             # nn.ReLU(),
@@ -671,6 +675,11 @@ class DecisionTransformerCnn(nn.Module):
             self.obs_proj,
             nn.ReLU(),
         )
+        self.pos_encoder = nn.Sequential(
+            nn.Linear(4, config['n_embd']),
+            nn.ReLU(),
+        )
+        self.state_pos_fuse = nn.Linear(2 * config['n_embd'], config['n_embd'])
         self.action_embeds = nn.Embedding(config['action_dim'], config['n_embd'])
 
         # state_dim = np.prod(obs_shape)
@@ -686,6 +695,14 @@ class DecisionTransformerCnn(nn.Module):
         self.action_dim = action_dim
         self.n_embd = n_embd
 
+    def _normalize_and_embed_pos(self, agent_pos, goal_pos):
+        ax = agent_pos[..., 0] / self.pos_x_denom
+        ay = agent_pos[..., 1] / self.pos_y_denom
+        gx = goal_pos[..., 0] / self.pos_x_denom
+        gy = goal_pos[..., 1] / self.pos_y_denom
+        pos = torch.stack([ax, ay, gx, gy], dim=-1)
+        return self.pos_encoder(pos)
+
     def forward(self, x, **kwargs):
         B,T = x['states'].shape[0], x['states'].shape[1]
         # states = x['states'].view(B, T, self.state_dim)
@@ -694,6 +711,8 @@ class DecisionTransformerCnn(nn.Module):
         states = states.permute(0, 3, 1, 2)
         states = self.cnn_encoder(states)  # (B*T, n_embd)
         states = states.view(B, T, self.n_embd)  # (B, T, n_embd)
+        pos_embeds = self._normalize_and_embed_pos(x['agent_pos'], x['goal_pos'])
+        states = self.state_pos_fuse(torch.cat([states, pos_embeds], dim=-1))
         
         actions = x['actions']
         input_actions = torch.cat([
@@ -730,7 +749,7 @@ class DecisionTransformerCnn(nn.Module):
         preds = self.pred_actions(transformer_outputs['last_hidden_state']) # B x T x A
         return preds
 
-    def get_action(self, states, actions, rewards, dones, attention_mask):
+    def get_action(self, states, agent_pos, goal_pos, actions, rewards, dones, attention_mask):
         # current_state: [B, H, W, C] -> [B, hidden_dim]
         B,T = states.shape[0], states.shape[1]
         # states = states.view(B, T, self.state_dim)
@@ -738,6 +757,8 @@ class DecisionTransformerCnn(nn.Module):
         states = states.permute(0, 3, 1, 2)
         states = self.cnn_encoder(states)  # (B*T, n_embd)
         states = states.view(B, T, self.n_embd)  # (B, T, n_embd)
+        pos_embeds = self._normalize_and_embed_pos(agent_pos, goal_pos)
+        states = self.state_pos_fuse(torch.cat([states, pos_embeds], dim=-1))
         actions = self.action_embeds(actions)
         # inputs_ = torch.cat([states, actions, rewards.unsqueeze(-1), dones.unsqueeze(-1)], dim=2)
         inputs_ = torch.cat([states, actions], dim=2)

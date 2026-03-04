@@ -404,6 +404,8 @@ class TransformerCNNPolicy():
         
         # Context buffers
         self.context_states = None
+        self.context_agent_pos = None
+        self.context_goal_pos = None
         self.context_actions = None
         self.context_rewards = None
         self.context_dones = None
@@ -412,6 +414,8 @@ class TransformerCNNPolicy():
         """Clear context buffers."""
         if self.context_states is None:
             self.context_states = [[] for _ in range(len(resets))]
+            self.context_agent_pos = [[] for _ in range(len(resets))]
+            self.context_goal_pos = [[] for _ in range(len(resets))]
             self.context_actions = [[] for _ in range(len(resets))]
             self.context_rewards = [[] for _ in range(len(resets))]
             self.context_dones = [[] for _ in range(len(resets))]
@@ -419,11 +423,21 @@ class TransformerCNNPolicy():
             for i, reset in enumerate(resets):
                 if reset:
                     self.context_states[i] = []
+                    self.context_agent_pos[i] = []
+                    self.context_goal_pos[i] = []
                     self.context_actions[i] = []
                     self.context_rewards[i] = []
                     self.context_dones[i] = []
 
-    def _get_context_tensors(self, current_states):
+    def _extract_positions(self, infos):
+        agent_pos = np.zeros((len(infos), 2), dtype=np.float32)
+        goal_pos = np.zeros((len(infos), 2), dtype=np.float32)
+        for i, info in enumerate(infos):
+            agent_pos[i] = np.asarray(info.get("agent_pos", (0, 0)), dtype=np.float32)
+            goal_pos[i] = np.asarray(info.get("goal_pos", (0, 0)), dtype=np.float32)
+        return agent_pos, goal_pos
+
+    def _get_context_tensors(self, current_states, current_infos):
         # """Convert context lists to tensors, trimmed to context_horizon."""
         # states = torch.from_numpy(np.stack(self.context_states, axis=1)).float().to(device)
         # actions = torch.from_numpy(np.stack(self.context_actions, axis=1)).float().to(device)
@@ -460,6 +474,12 @@ class TransformerCNNPolicy():
             dtype=torch.float32,
             device=self.model_device,
         )
+        agent_pos = torch.zeros(
+            (batch_size, max_len, 2), dtype=torch.float32, device=self.model_device
+        )
+        goal_pos = torch.zeros(
+            (batch_size, max_len, 2), dtype=torch.float32, device=self.model_device
+        )
         actions = torch.zeros(
             (batch_size, max_len), dtype=torch.long, device=self.model_device
         )
@@ -472,11 +492,22 @@ class TransformerCNNPolicy():
         attention_mask = torch.zeros(
             (batch_size, max_len), dtype=torch.float32, device=self.model_device
         )
+        current_agent_pos, current_goal_pos = self._extract_positions(current_infos)
         for i in range(batch_size):
             seq_len = len(self.context_states[i])
             if seq_len > 0:
                 states[i, :seq_len] = torch.as_tensor(
                     np.stack(self.context_states[i], axis=0),
+                    dtype=torch.float32,
+                    device=self.model_device,
+                )
+                agent_pos[i, :seq_len] = torch.as_tensor(
+                    np.stack(self.context_agent_pos[i], axis=0),
+                    dtype=torch.float32,
+                    device=self.model_device,
+                )
+                goal_pos[i, :seq_len] = torch.as_tensor(
+                    np.stack(self.context_goal_pos[i], axis=0),
                     dtype=torch.float32,
                     device=self.model_device,
                 )
@@ -500,22 +531,42 @@ class TransformerCNNPolicy():
                 dtype=torch.float32,
                 device=self.model_device,
             )  # Add current state as last in sequence
+            agent_pos[i, seq_len] = torch.as_tensor(
+                current_agent_pos[i], dtype=torch.float32, device=self.model_device
+            )
+            goal_pos[i, seq_len] = torch.as_tensor(
+                current_goal_pos[i], dtype=torch.float32, device=self.model_device
+            )
             attention_mask[i, :seq_len+1] = 1.0  # Mask for valid tokens
-        return states, actions, rewards, dones, attention_mask
+        return states, agent_pos, goal_pos, actions, rewards, dones, attention_mask
         
 
     @torch.no_grad()
-    def get_action(self, states):
+    def get_action(self, states, infos):
         """Get action using the transformer model."""
         self.model.eval()
         # current_states = torch.from_numpy(states).float().to(device)
-        input_states, input_actions, input_rewards, input_dones, attention_mask = self._get_context_tensors(states)
+        (
+            input_states,
+            input_agent_pos,
+            input_goal_pos,
+            input_actions,
+            input_rewards,
+            input_dones,
+            attention_mask,
+        ) = self._get_context_tensors(states, infos)
         # print("Input states shape:", input_states.shape)
         # print("Input actions shape:", input_actions.shape)
         # print("Input rewards shape:", input_rewards.shape)
         # print("Input dones shape:", input_dones.shape)
         action_output = self.model.get_action(
-            input_states, input_actions, input_rewards, input_dones, attention_mask
+            input_states,
+            input_agent_pos,
+            input_goal_pos,
+            input_actions,
+            input_rewards,
+            input_dones,
+            attention_mask,
         )
         logits = action_output.cpu().numpy()
         probs = scipy.special.softmax(logits / self.temp, axis=1)
@@ -525,10 +576,13 @@ class TransformerCNNPolicy():
         ]) # Batch of action indices
         return actions
 
-    def update_context(self, states, actions, rewards, dones):
+    def update_context(self, states, infos, actions, rewards, dones):
         """Add new transition to context."""
+        agent_pos, goal_pos = self._extract_positions(infos)
         for i in range(len(states)):
             self.context_states[i].append(states[i])
+            self.context_agent_pos[i].append(agent_pos[i])
+            self.context_goal_pos[i].append(goal_pos[i])
             self.context_actions[i].append(actions[i])
             self.context_rewards[i].append(rewards[i])
             self.context_dones[i].append(dones[i])

@@ -82,9 +82,9 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
                 episode_frames[i].append((partial, rgb))
 
         # prev_obs = obs
-        actions = policy.get_action(obs)
+        actions = policy.get_action(obs, infos)
         next_obs, rewards, dones, infos = eval_envs.step(actions)
-        policy.update_context(obs, actions, rewards, dones)
+        policy.update_context(obs, infos, actions, rewards, dones)
         policy.reset(dones)
         obs = next_obs
 
@@ -160,6 +160,12 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             # observations: (T, H, W, C) float32
             "observations": torch.tensor(
                 np.array(traj['observations'])[steps], dtype=torch.float32),
+            # agent_pos: (T, 2) float32
+            "agent_pos": torch.tensor(
+                np.array(traj['agent_pos'])[steps], dtype=torch.float32),
+            # goal_pos: (T, 2) float32
+            "goal_pos": torch.tensor(
+                np.array(traj['goal_pos'])[steps], dtype=torch.float32),
             # actions: (T,) long  – discrete action ids 0..3
             "actions": torch.tensor(
                 np.array(traj['actions'])[steps], dtype=torch.long),
@@ -315,6 +321,7 @@ def get_procgen_dataset(env, n_trajs, eval_policy, exploration_steps_range,
     def _new():
         return {'observations': [], 'actions': [], 'rewards': [],
                 'dones': [], 'expert_mask': [],
+                'agent_pos': [], 'goal_pos': [],
                 '_full_obs': [], '_rgb': [], '_opt_grid': []}
 
     all_trajs = []
@@ -337,7 +344,7 @@ def get_procgen_dataset(env, n_trajs, eval_policy, exploration_steps_range,
         current_exploration_steps += 1
         use_expert = current_exploration_steps >= exploration_steps
         if ~ use_expert.all():
-            policy_action = eval_policy.get_action(obs)
+            policy_action = eval_policy.get_action(obs, infos)
         for i in range(env.n):
             if use_expert[i]:
                 acts[i] = infos[i].get('opt_action', 0)
@@ -347,11 +354,17 @@ def get_procgen_dataset(env, n_trajs, eval_policy, exploration_steps_range,
         # prev_obs = obs
         next_obs, rews, dones, next_infos = env.step(acts)
         if eval_policy is not None:
-            eval_policy.update_context(obs, acts, rews, dones)
+            eval_policy.update_context(obs, infos, acts, rews, dones)
 
         for i in range(env.n):
             save_vid = len(all_trajs) + i < n_video_trajs
             trajs[i]['observations'].append(obs[i].copy())
+            trajs[i]['agent_pos'].append(
+                np.array(infos[i].get('agent_pos', (0, 0)), dtype=np.float32)
+            )
+            trajs[i]['goal_pos'].append(
+                np.array(infos[i].get('goal_pos', (0, 0)), dtype=np.float32)
+            )
             trajs[i]['actions'].append(int(acts[i]))
             trajs[i]['rewards'].append(float(rews[i]))
             trajs[i]['dones'].append(bool(dones[i]))
@@ -537,6 +550,8 @@ def train_step(
         B, T = batch['observations'].shape[:2]
         model_input = {
             'states': batch['observations'],   # (B, T, H, W, C)
+            'agent_pos': batch['agent_pos'],   # (B, T, 2)
+            'goal_pos': batch['goal_pos'],     # (B, T, 2)
             'actions': batch['actions'],         # (B, T, A)
             'rewards': batch['rewards'],        # (B, T)
             'dones': batch['dones'],            # (B, T)
