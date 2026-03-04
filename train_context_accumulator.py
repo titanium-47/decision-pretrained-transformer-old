@@ -66,7 +66,7 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
     ps = panel_size
     pbar = tqdm.tqdm(total=n, desc=f"Evaluating {eval_name}", unit="step")
     for t in range(eval_horizon):
-        for i in range(n):
+        for i in range(5):
             if not done_flag[i]:
                 # rendered partial obs
                 partial = _render_grid_obs(obs[i])  # uint8
@@ -735,7 +735,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--num_epochs", type=int, default=100)
+    parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--gradient_clip", action="store_true")
     parser.add_argument("--eval_interval", type=float, default=0.1)
@@ -748,6 +748,7 @@ if __name__ == "__main__":
 
     # Paths
     parser.add_argument("--save_dir", type=str, default="./context_results")
+    parser.add_argument("--device", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -770,7 +771,7 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"Using device: {device}")
 
     save_dir = os.path.join(

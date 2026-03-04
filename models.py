@@ -697,7 +697,11 @@ class DecisionTransformerCnn(nn.Module):
         
         actions = x['actions']
         input_actions = torch.cat([
-            torch.zeros((actions.shape[0], 1), dtype=torch.long).to(device),
+            torch.zeros(
+                (actions.shape[0], 1),
+                dtype=torch.long,
+                device=actions.device,
+            ),
             actions[:, :-1],
         ], dim=1)
         # breakpoint()
@@ -742,7 +746,7 @@ class DecisionTransformerCnn(nn.Module):
         transformer_outputs = self.transformer(inputs_embeds=inputs, attention_mask=attention_mask)
         preds = self.pred_actions(transformer_outputs['last_hidden_state']) # B x T x A
         seq_len = attention_mask.sum(dim=1).long()  # [B]
-        last_preds = preds[torch.arange(B), seq_len - 1]  # [B, A]
+        last_preds = preds[torch.arange(B, device=preds.device), seq_len - 1]  # [B, A]
         return last_preds
 
 

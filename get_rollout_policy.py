@@ -398,6 +398,7 @@ class TransformerCNNPolicy():
         """
         super().__init__()
         self.model = model
+        self.model_device = next(model.parameters()).device
         self.temp = temp
         self.context_horizon = context_horizon
         
@@ -454,19 +455,51 @@ class TransformerCNNPolicy():
         """Convert list to padded tensors"""
         batch_size = len(self.context_states)
         max_len = max(len(s) for s in self.context_states)+1  # +1 for current state
-        states = torch.zeros((batch_size, max_len, *current_states[0].shape), dtype=torch.float32).to(device)
-        actions = torch.zeros((batch_size, max_len), dtype=torch.long).to(device)
-        rewards = torch.zeros((batch_size, max_len), dtype=torch.float32).to(device)
-        dones = torch.zeros((batch_size, max_len), dtype=torch.float32).to(device)
-        attention_mask = torch.zeros((batch_size, max_len), dtype=torch.float32).to(device)
+        states = torch.zeros(
+            (batch_size, max_len, *current_states[0].shape),
+            dtype=torch.float32,
+            device=self.model_device,
+        )
+        actions = torch.zeros(
+            (batch_size, max_len), dtype=torch.long, device=self.model_device
+        )
+        rewards = torch.zeros(
+            (batch_size, max_len), dtype=torch.float32, device=self.model_device
+        )
+        dones = torch.zeros(
+            (batch_size, max_len), dtype=torch.float32, device=self.model_device
+        )
+        attention_mask = torch.zeros(
+            (batch_size, max_len), dtype=torch.float32, device=self.model_device
+        )
         for i in range(batch_size):
             seq_len = len(self.context_states[i])
             if seq_len > 0:
-                states[i, :seq_len] = torch.from_numpy(np.stack(self.context_states[i], axis=0)).float().to(device)
-                actions[i, 1:seq_len+1] = torch.from_numpy(np.stack(self.context_actions[i], axis=0)).long().to(device)
-                rewards[i, 1:seq_len+1] = torch.from_numpy(np.array(self.context_rewards[i])).float().to(device)
-                dones[i, 1:seq_len+1] = torch.from_numpy(np.array(self.context_dones[i])).float().to(device)
-            states[i, seq_len] = torch.from_numpy(current_states[i]).float().to(device)  # Add current state as last in sequence
+                states[i, :seq_len] = torch.as_tensor(
+                    np.stack(self.context_states[i], axis=0),
+                    dtype=torch.float32,
+                    device=self.model_device,
+                )
+                actions[i, 1:seq_len+1] = torch.as_tensor(
+                    np.stack(self.context_actions[i], axis=0),
+                    dtype=torch.long,
+                    device=self.model_device,
+                )
+                rewards[i, 1:seq_len+1] = torch.as_tensor(
+                    np.array(self.context_rewards[i]),
+                    dtype=torch.float32,
+                    device=self.model_device,
+                )
+                dones[i, 1:seq_len+1] = torch.as_tensor(
+                    np.array(self.context_dones[i]),
+                    dtype=torch.float32,
+                    device=self.model_device,
+                )
+            states[i, seq_len] = torch.as_tensor(
+                current_states[i],
+                dtype=torch.float32,
+                device=self.model_device,
+            )  # Add current state as last in sequence
             attention_mask[i, :seq_len+1] = 1.0  # Mask for valid tokens
         return states, actions, rewards, dones, attention_mask
         
