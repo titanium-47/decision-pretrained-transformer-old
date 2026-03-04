@@ -62,12 +62,12 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
     episode_rewards = np.zeros(n, dtype=np.float32)
     successes = np.zeros(n, dtype=bool)
     # each frame is (partial_rgb, full_rgb) – both uint8
-    episode_frames = [[] for _ in range(n)]
+    episode_frames = [[] for _ in range(5)]
 
     ps = panel_size
     pbar = tqdm.tqdm(total=n, desc=f"Evaluating {eval_name}", unit="step")
     for t in range(eval_horizon):
-        for i in range(n):
+        for i in range(5):
             if not done_flag[i]:
                 full_grid = infos[i]["full_obs"]
                 # rendered observation
@@ -773,7 +773,7 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--gradient_clip", action="store_true")
     parser.add_argument("--eval_interval", type=float, default=0.1)
-    parser.add_argument("--save_interval", type=float, default=0.1)
+    parser.add_argument("--save_interval", type=float, default=0.5)
 
     # Logging
     parser.add_argument("--log_wandb", action="store_true")
@@ -1053,62 +1053,63 @@ if __name__ == "__main__":
         # 4. Evaluate
         eval_save_dir = os.path.join(
             save_dir, f"dagger_step_{step_idx}", "eval")
-        mean_ret, std_ret, success_rate = evaluate_policy_on_envs_procgen(
-            eval_envs=eval_env,
-            # eval_envs=train_env,  # evaluate on training envs to see improvement across steps
-            policy=eval_policy,
-            eval_horizon=env_horizon,
-            save_dir=eval_save_dir,
-            dagger_step=step_idx,
-            eval_name="temp_1.0",
-        )
+        if step_idx%10 == 0 or step_idx == args.dagger_steps - 1:
+            mean_ret, std_ret, success_rate = evaluate_policy_on_envs_procgen(
+                eval_envs=eval_env,
+                # eval_envs=train_env,  # evaluate on training envs to see improvement across steps
+                policy=eval_policy,
+                eval_horizon=env_horizon,
+                save_dir=eval_save_dir,
+                dagger_step=step_idx,
+                eval_name="temp_1.0",
+            )
 
-        print(f"Eval return: {mean_ret:.2f} ± {std_ret:.2f}")
+            print(f"Eval return: {mean_ret:.2f} ± {std_ret:.2f}")
 
-        ## Low temp eval
-        eval_policy_low_temp = TransformerPolicy(
-            model=model,
-            context_horizon=model_horizon,
-            env_horizon=env_horizon,
-            temp=0.1
-        )
-        mean_ret_low, std_ret_low, success_rate_low = evaluate_policy_on_envs_procgen(
-            eval_envs=eval_env,
-            policy=eval_policy_low_temp,
-            eval_horizon=env_horizon,
-            save_dir=os.path.join(eval_save_dir, "low_temp"),
-            dagger_step=step_idx,
-            eval_name="temp_0.1",
-        )
-        print(f"Low-temp eval return: {mean_ret_low:.2f} ± {std_ret_low:.2f}")
+            ## Low temp eval
+            eval_policy_low_temp = TransformerPolicy(
+                model=model,
+                context_horizon=model_horizon,
+                env_horizon=env_horizon,
+                temp=0.1
+            )
+            mean_ret_low, std_ret_low, success_rate_low = evaluate_policy_on_envs_procgen(
+                eval_envs=eval_env,
+                policy=eval_policy_low_temp,
+                eval_horizon=env_horizon,
+                save_dir=os.path.join(eval_save_dir, "low_temp"),
+                dagger_step=step_idx,
+                eval_name="temp_0.1",
+            )
+            print(f"Low-temp eval return: {mean_ret_low:.2f} ± {std_ret_low:.2f}")
 
-        if args.log_wandb:
-            eval_payload = {
-                "dagger_step": step_idx,
-                "eval/temp_1.0_mean_return":
-                    mean_ret,
-                "eval/temp_1.0_std_return":
-                    std_ret,
-                "eval/temp_1.0_success_rate":
-                    success_rate,
-                "eval/temp_0.1_mean_return":
-                    mean_ret_low,
-                "eval/temp_0.1_std_return":
-                    std_ret_low,
-                "eval/temp_0.1_success_rate":
-                    success_rate_low,
-                # f"eval/curriculum_exploration_min":
-                #     exploration_steps_curriculum[step_idx][0],
-                # f"step{step_idx}_eval/curriculum_exploration_max":
-                #     exploration_steps_curriculum[step_idx][1],
-                # f"step{step_idx}_eval/curriculum_learning_rate":
-                #     lr_curriculum[step_idx],
-            }
-            for ratio_idx, ratio_val in enumerate(sampling_ratio):
-                eval_payload[
-                    f"eval/curriculum_sampling_ratio_{ratio_idx}"
-                ] = ratio_val
-            wandb.log(eval_payload)
+            if args.log_wandb:
+                eval_payload = {
+                    "dagger_step": step_idx,
+                    "eval/temp_1.0_mean_return":
+                        mean_ret,
+                    "eval/temp_1.0_std_return":
+                        std_ret,
+                    "eval/temp_1.0_success_rate":
+                        success_rate,
+                    "eval/temp_0.1_mean_return":
+                        mean_ret_low,
+                    "eval/temp_0.1_std_return":
+                        std_ret_low,
+                    "eval/temp_0.1_success_rate":
+                        success_rate_low,
+                    # f"eval/curriculum_exploration_min":
+                    #     exploration_steps_curriculum[step_idx][0],
+                    # f"step{step_idx}_eval/curriculum_exploration_max":
+                    #     exploration_steps_curriculum[step_idx][1],
+                    # f"step{step_idx}_eval/curriculum_learning_rate":
+                    #     lr_curriculum[step_idx],
+                }
+                for ratio_idx, ratio_val in enumerate(sampling_ratio):
+                    eval_payload[
+                        f"eval/curriculum_sampling_ratio_{ratio_idx}"
+                    ] = ratio_val
+                wandb.log(eval_payload)
 
         # 5. Decay expert probability
         # expert_p = max(min_expert_p, expert_p - expert_p_decay)
