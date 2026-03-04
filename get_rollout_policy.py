@@ -178,13 +178,17 @@ class TransformerPolicy(BasePolicy):
         self.context_actions = []
         self.context_rewards = []
         self.context_dones = []
+        self.context_goals = []
 
-    def reset(self):
-        """Clear context buffers."""
+    def reset(self, resets=None):
+        """Clear context buffers (full reset at rollout start)."""
+        if resets is not None and not np.asarray(resets).all():
+            return
         self.context_states = []
         self.context_actions = []
         self.context_rewards = []
         self.context_dones = []
+        self.context_goals = []
 
     def _get_context_tensors(self):
         """Convert context lists to tensors, trimmed to context_horizon."""
@@ -192,6 +196,7 @@ class TransformerPolicy(BasePolicy):
         actions = torch.from_numpy(np.stack(self.context_actions, axis=1)).float().to(device)
         rewards = torch.from_numpy(np.stack(self.context_rewards, axis=1)).float().to(device)
         dones = torch.from_numpy(np.stack(self.context_dones, axis=1)).float().to(device)
+        goals = torch.from_numpy(np.stack(self.context_goals, axis=1)).float().to(device)
         
         # Trim to context horizon if needed
         if states.shape[1] > self.model.horizon - 1:
@@ -201,6 +206,7 @@ class TransformerPolicy(BasePolicy):
                 actions = actions[:, -(self.context_horizon - 1):]
                 rewards = rewards[:, -(self.context_horizon - 1):]
                 dones = dones[:, -(self.context_horizon - 1):]
+                goals = goals[:, -(self.context_horizon - 1):]
             else:
                 # Trim to episode boundary
                 trimmed_dones = dones[:, -self.context_horizon:]
@@ -213,21 +219,31 @@ class TransformerPolicy(BasePolicy):
                 actions = actions[:, start_idx:]
                 rewards = rewards[:, start_idx:]
                 dones = dones[:, start_idx:]
+                goals = goals[:, start_idx:]
         
-        return states, actions, rewards, dones
+        return states, actions, rewards, dones, goals
 
     @torch.no_grad()
-    def get_action(self, states):
+    def get_action(self, states, goals=None):
         """Get action using the transformer model."""
         self.model.eval()
         current_states = torch.from_numpy(states).float().to(device)
+        current_goals = None
+        if goals is not None:
+            current_goals = torch.from_numpy(np.asarray(goals)).float().to(device)
         
         if len(self.context_states) < 1:
-            action_output = self.model.get_action(current_states, None, None, None, None)
-        else:
-            ctx_states, ctx_actions, ctx_rewards, ctx_dones = self._get_context_tensors()
             action_output = self.model.get_action(
-                current_states, ctx_states, ctx_actions, ctx_rewards, ctx_dones
+                current_states, None, None, None, None, current_goals
+            )
+        else:
+            ctx_states, ctx_actions, ctx_rewards, ctx_dones, ctx_goals = self._get_context_tensors()
+            if current_goals is not None:
+                all_goals = torch.cat([ctx_goals, current_goals.unsqueeze(1)], dim=1)
+            else:
+                all_goals = ctx_goals
+            action_output = self.model.get_action(
+                current_states, ctx_states, ctx_actions, ctx_rewards, ctx_dones, all_goals
             )
         
         if self.continuous_action:
@@ -250,12 +266,16 @@ class TransformerPolicy(BasePolicy):
             actions[np.arange(batch_size), action_ids] = 1.0
             return actions
 
-    def update_context(self, states, actions, rewards, dones):
+    def update_context(self, states, actions, rewards, dones, goals=None):
         """Add new transition to context."""
         self.context_states.append(states)
         self.context_actions.append(actions)
         self.context_rewards.append(rewards)
         self.context_dones.append(dones)
+        if goals is not None:
+            self.context_goals.append(goals)
+        else:
+            self.context_goals.append(np.zeros((states.shape[0], 2), dtype=np.float32))
 
 
 class HybridPolicy(TransformerPolicy):

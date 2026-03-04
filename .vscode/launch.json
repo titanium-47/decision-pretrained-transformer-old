@@ -1,0 +1,18 @@
+{
+    "configurations": [
+        {
+            "name": "train_context_accumulator maze env",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train_context_accumulator.py",
+            "args": [
+                "--exp_name", "test",
+                "--env_name", "maze",
+                "--seed", "42",
+                "--n_train_envs", "16",
+                "--n_eval_envs", "100",
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}

@@ -27,9 +27,10 @@ import wandb
 
 from PIL import Image
 
-from get_rollout_policy import TransformerCNNPolicy
-from models import DecisionTransformerCnn
+from get_rollout_policy import TransformerPolicy
+from models import DecisionTransformer
 from maze_env import make_maze_envs, _render_grid_obs
+from encoders import GoalInformationBottleneckEncoder, GoalDeterministicEncoder, NullEncoder, DiffusionForwardNoiseEncoder, NoOpEncoder
 
 
 # ---------------------------------------------------------------------------
@@ -68,23 +69,28 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
     for t in range(eval_horizon):
         for i in range(n):
             if not done_flag[i]:
-                # rendered partial obs
-                partial = _render_grid_obs(obs[i])  # uint8
+                full_grid = infos[i]["full_obs"]
+                # rendered observation
+                partial = _render_grid_obs(full_grid)  # uint8
                 partial = np.array(Image.fromarray(partial).resize(
                     (ps, ps), Image.NEAREST))
-                # full RGB from procgen
-                rgb = infos[i]["full_obs"]
-                rgb = _render_grid_obs(rgb) 
-                # if rgb is None:
-                #     rgb = _render_grid_obs(obs[i])
+                # second panel: full grid (same source for maze)
+                rgb = _render_grid_obs(full_grid)
                 rgb = np.array(Image.fromarray(rgb).resize(
                     (ps, ps), Image.NEAREST))
                 episode_frames[i].append((partial, rgb))
 
         # prev_obs = obs
-        actions = policy.get_action(obs)
-        next_obs, rewards, dones, infos = eval_envs.step(actions)
-        policy.update_context(obs, actions, rewards, dones)
+        current_goals = np.array([info["goal_pos"] for info in infos], dtype=np.float32)
+        policy_actions = policy.get_action(obs, current_goals)
+        if policy_actions.ndim == 2:
+            action_ids = np.argmax(policy_actions, axis=1).astype(np.int32)
+            action_ctx = policy_actions.astype(np.float32)
+        else:
+            action_ids = policy_actions.astype(np.int32)
+            action_ctx = np.eye(eval_envs.action_space.n, dtype=np.float32)[action_ids]
+        next_obs, rewards, dones, infos = eval_envs.step(action_ids)
+        policy.update_context(obs, action_ctx, rewards, dones, current_goals)
         policy.reset(dones)
         obs = next_obs
 
@@ -169,6 +175,9 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             # dones: (T,)
             "dones": torch.tensor(
                 np.array(traj['dones'])[steps], dtype=torch.float32),
+            # goals: (T, 2)
+            "goals": torch.tensor(
+                np.array(traj['goals'])[steps], dtype=torch.float32),
             # expert_actions: (T,) long
             # "expert_actions": torch.tensor(
             #     np.array(traj['expert_actions']), dtype=torch.long),
@@ -314,7 +323,7 @@ def get_procgen_dataset(env, n_trajs, eval_policy, exploration_steps_range,
 
     def _new():
         return {'observations': [], 'actions': [], 'rewards': [],
-                'dones': [], 'expert_mask': [],
+                'dones': [], 'goals': [], 'expert_mask': [],
                 '_full_obs': [], '_rgb': [], '_opt_grid': []}
 
     all_trajs = []
@@ -336,8 +345,13 @@ def get_procgen_dataset(env, n_trajs, eval_policy, exploration_steps_range,
         # is_expert = is_expert | (np.random.random(env.n) < expert_p)
         current_exploration_steps += 1
         use_expert = current_exploration_steps >= exploration_steps
+        current_goals = np.array([info["goal_pos"] for info in infos], dtype=np.float32)
         if ~ use_expert.all():
-            policy_action = eval_policy.get_action(obs)
+            policy_action = eval_policy.get_action(obs, current_goals)
+            if policy_action.ndim == 2:
+                policy_action = np.argmax(policy_action, axis=1).astype(np.int32)
+            else:
+                policy_action = policy_action.astype(np.int32)
         for i in range(env.n):
             if use_expert[i]:
                 acts[i] = infos[i].get('opt_action', 0)
@@ -347,7 +361,8 @@ def get_procgen_dataset(env, n_trajs, eval_policy, exploration_steps_range,
         # prev_obs = obs
         next_obs, rews, dones, next_infos = env.step(acts)
         if eval_policy is not None:
-            eval_policy.update_context(obs, acts, rews, dones)
+            acts_onehot = np.eye(env.action_space.n, dtype=np.float32)[acts]
+            eval_policy.update_context(obs, acts_onehot, rews, dones, current_goals)
 
         for i in range(env.n):
             save_vid = len(all_trajs) + i < n_video_trajs
@@ -355,6 +370,8 @@ def get_procgen_dataset(env, n_trajs, eval_policy, exploration_steps_range,
             trajs[i]['actions'].append(int(acts[i]))
             trajs[i]['rewards'].append(float(rews[i]))
             trajs[i]['dones'].append(bool(dones[i]))
+            trajs[i]['goals'].append(
+                np.array(infos[i].get('goal_pos'), dtype=np.float32))
             # trajs[i]['expert_actions'].append(int(expert_acts[i]))
             trajs[i]['expert_mask'].append(bool(use_expert[i]))
             trajs[i]['_full_obs'].append(
@@ -535,14 +552,16 @@ def train_step(
         # Model expects dict with 'states', 'actions', 'rewards', 'dones'
         # states: (B, T, H, W, C), actions: one-hot (B, T, A)
         B, T = batch['observations'].shape[:2]
+        actions_onehot = F.one_hot(batch['actions'], num_classes=action_dim).float()
         model_input = {
-            'states': batch['observations'],   # (B, T, H, W, C)
-            'actions': batch['actions'],         # (B, T, A)
+            'states': batch['observations'],   # (B, T, C)
+            'actions': actions_onehot,         # (B, T, A)
             'rewards': batch['rewards'],        # (B, T)
             'dones': batch['dones'],            # (B, T)
+            'goals': batch['goals'],            # (B, T, 2)
         }
 
-        pred_logits = model(model_input)  # (B, T, A)
+        pred_logits, _ = model(model_input)  # (B, T, A)
 
         # true_actions = batch['expert_actions']  # (B, T) long
         true_actions = batch['actions']  # (B, T) long
@@ -730,12 +749,27 @@ if __name__ == "__main__":
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--n_embd", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--encoder_type",
+        type=str,
+        default="noop",
+        choices=["information_bottleneck", "deterministic", "null",
+                 "diffusion_forward_noise", "noop"],
+    )
+    parser.add_argument(
+        "--state_encoder_type",
+        type=str,
+        default="noop",
+        choices=["information_bottleneck", "deterministic", "null",
+                 "diffusion_forward_noise", "noop"],
+    )
+    parser.add_argument("--alpha", type=float, default=1.0)
 
     # Training
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--num_epochs", type=int, default=100)
+    parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--gradient_clip", action="store_true")
     parser.add_argument("--eval_interval", type=float, default=0.1)
@@ -795,6 +829,14 @@ if __name__ == "__main__":
     )
     obs_shape = tuple(train_env.observation_space.shape)  # (H, W, C)
     action_dim = train_env.action_space.n  # 4
+    state_dim = 2
+    encoder_class_map = {
+        'information_bottleneck': GoalInformationBottleneckEncoder,
+        'deterministic': GoalDeterministicEncoder,
+        'null': NullEncoder,
+        'diffusion_forward_noise': DiffusionForwardNoiseEncoder,
+        'noop': NoOpEncoder
+    }
     env_horizon = 500  # procgen maze max episode steps (easy mode)
     print(f"Obs shape: {obs_shape}, Action dim: {action_dim}, "
           f"Env horizon: {env_horizon}")
@@ -803,9 +845,16 @@ if __name__ == "__main__":
     # Model
     # ------------------------------------------------------------------
     model_horizon = 2 * env_horizon
-    model_args = {
+    encoder_kwargs = {}
+    if args.encoder_type == "diffusion_forward_noise":
+        encoder_kwargs["alpha"] = args.alpha
+    state_encoder_kwargs = {}
+    if args.state_encoder_type == "diffusion_forward_noise":
+        state_encoder_kwargs["alpha"] = args.alpha
+
+    model_args =  {
         "horizon": model_horizon,
-        "obs": obs_shape,          # (H, W, C)
+        "state_dim": state_dim,
         "action_dim": action_dim,
         "n_layer": args.num_layers,
         "n_head": args.num_heads,
@@ -813,11 +862,25 @@ if __name__ == "__main__":
         "dropout": args.dropout,
         "shuffle": True,
         "test": False,
+        "continuous_action": False,
+        "gmm_heads": 1,
+        'encoder': {
+            'class': encoder_class_map[args.encoder_type],
+            'input_dim': 2,
+            'latent_dim': 2,
+            'kwargs': encoder_kwargs,
+        },
+        'state_encoder': {
+            'class': encoder_class_map[args.state_encoder_type],
+            'input_dim': state_dim,
+            'latent_dim': state_dim,
+            'kwargs': state_encoder_kwargs,
+        },
     }
     with open(os.path.join(save_dir, "model_args.pkl"), "wb") as f:
         pickle.dump(model_args, f)
 
-    model = DecisionTransformerCnn(model_args).to(device)
+    model = DecisionTransformer(model_args).to(device)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # ------------------------------------------------------------------
@@ -886,9 +949,10 @@ if __name__ == "__main__":
         print(f"{'=' * 60}")
 
         # 1. Collect data
-        data_collection_policy = TransformerCNNPolicy(
+        data_collection_policy = TransformerPolicy(
             model=model,
             context_horizon=model_horizon,
+            env_horizon=env_horizon,
             temp=1.0
         )
         all_trajs, _ = get_procgen_dataset(
@@ -978,9 +1042,10 @@ if __name__ == "__main__":
 
         # 3. Build evaluation policy from trained model
         print(f"\nEvaluating after DAgger step {step_idx}...")
-        eval_policy = TransformerCNNPolicy(
+        eval_policy = TransformerPolicy(
             model=model,
             context_horizon=model_horizon,
+            env_horizon=env_horizon,
             temp=1.0
         )
         # eval_policy_adapter = _PolicyAdapter(transformer_policy)
@@ -1001,9 +1066,10 @@ if __name__ == "__main__":
         print(f"Eval return: {mean_ret:.2f} ± {std_ret:.2f}")
 
         ## Low temp eval
-        eval_policy_low_temp = TransformerCNNPolicy(
+        eval_policy_low_temp = TransformerPolicy(
             model=model,
             context_horizon=model_horizon,
+            env_horizon=env_horizon,
             temp=0.1
         )
         mean_ret_low, std_ret_low, success_rate_low = evaluate_policy_on_envs_procgen(

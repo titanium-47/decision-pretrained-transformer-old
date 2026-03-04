@@ -373,6 +373,14 @@ class DecisionTransformer(nn.Module):
         self.state_dim = self.config['state_dim']
         self.action_dim = self.config['action_dim']
         self.dropout = self.config['dropout']
+        self.goal_encoder = self.config['encoder']['class'](
+            self.config['encoder']['input_dim'], 
+            self.config['encoder']['latent_dim'],
+            **self.config['encoder']['kwargs'])
+        self.state_encoder = self.config['state_encoder']['class'](
+            self.config['state_encoder']['input_dim'], 
+            self.config['state_encoder']['latent_dim'],
+            **self.config['state_encoder']['kwargs'])
 
         gpt_config = GPT2Config(
             n_positions=self.horizon,
@@ -388,7 +396,7 @@ class DecisionTransformer(nn.Module):
         self.transformer = GPT2Model(gpt_config)
 
         self.embed_transition = nn.Linear(
-            self.state_dim + self.action_dim + 2, self.n_embd)
+            self.config['state_encoder']['latent_dim'] + self.action_dim + 2 + self.config['encoder']['latent_dim'], self.n_embd)
         self.embed_ln = nn.LayerNorm(self.n_embd)
         self.continuous_action = self.config['continuous_action']
         self.gmm_heads = self.config['gmm_heads']
@@ -408,18 +416,13 @@ class DecisionTransformer(nn.Module):
         self.tanh_action = config.get('tanh_action', False)
         self.low_noise_eval = config.get('low_noise_eval', False)
         
-        # Robomimic defaults for Gaussian policy
-        self.init_std = config.get('init_std', 0.3)
-        self.std_limits = (
-            config.get('std_min', 0.007),  # min
-            config.get('std_max', 7.5),    # max
-        )
-        
     def forward(self, x, query_actions=None, sample_time=False):
         states = x['states']
         actions = x['actions']
         rewards = x['rewards']
+        goals = x['goals']
         dones = x['dones']
+        state_embeds = self.state_encoder(states)
         input_actions = torch.cat([
             torch.zeros(states.shape[0], 1, self.action_dim).to(device),
             actions[:, :-1, :],
@@ -432,6 +435,7 @@ class DecisionTransformer(nn.Module):
             torch.zeros(states.shape[0], 1).to(device),
             dones[:, :-1],
         ], dim=1)
+        goal_embeds = self.goal_encoder(goals) # B x T x latent_dim
         position_ids = None
         if sample_time:
             # assert False, "Sampling time not supported."
@@ -441,7 +445,7 @@ class DecisionTransformer(nn.Module):
             initial_timestep = torch.randint(0, self.horizon - states.shape[1], (states.shape[0],), device=states.device)
             position_ids = position_ids + initial_timestep.unsqueeze(1)
 
-        inputs_ = torch.cat([states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1)], dim=2)
+        inputs_ = torch.cat([state_embeds, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
         inputs = self.embed_transition(inputs_)
         inputs = self.embed_ln(inputs)
 
@@ -458,29 +462,22 @@ class DecisionTransformer(nn.Module):
             hidden = transformer_outputs['last_hidden_state']  # [B, T, H]
             action_weights = self.pred_action_weights(hidden)
             action_means = self.pred_action_means(hidden)
-            action_std_raw = self.pred_action_log_stds(hidden)
+            action_log_stds = self.pred_action_log_stds(hidden)
             B, T, _ = action_means.shape
             K = self.gmm_heads
             D = self.action_dim
-            action_means = action_means.reshape(B, T, K, D)
-            action_std_raw = action_std_raw.reshape(B, T, K, D)
-            
-            # Scaled softplus exactly like robomimic
-            action_stds = F.softplus(action_std_raw)
-            action_stds = action_stds * (self.init_std / F.softplus(torch.zeros(1, device=action_std_raw.device)))
-            action_stds = torch.clamp(action_stds, min=self.std_limits[0], max=self.std_limits[1])
-            
+            action_means    = action_means.reshape(B, T, K, D)
+            action_log_stds = action_log_stds.reshape(B, T, K, D)
+            LOG_SIG_MIN = -20.0
+            LOG_SIG_MAX =  20.0
+            action_log_stds = action_log_stds.clamp(min=LOG_SIG_MIN, max=LOG_SIG_MAX)
+            action_stds = action_log_stds.exp()
             if not self.training and self.low_noise_eval:
                 action_stds = torch.ones_like(action_stds) * 1e-4
-            
-            # Clamp and tanh the mean
-            action_means = torch.clamp(action_means, -MEAN_CLAMP, MEAN_CLAMP)
-            if not self.tanh_action:
-                action_means = torch.tanh(action_means)
 
             mixture = torch.distributions.Categorical(logits=action_weights)
-            components = Independent(
-                Normal(loc=action_means, scale=action_stds),  # batch: [B, T, K], event: D
+            components = torch.distributions.Independent(
+                torch.distributions.Normal(loc=action_means, scale=action_stds),  # batch: [B, T, K], event: D
                 1
             )
             dist = torch.distributions.MixtureSameFamily(mixture, components)
@@ -490,33 +487,19 @@ class DecisionTransformer(nn.Module):
         if self.continuous_action:
             action_means = self.pred_action_means(
                 transformer_outputs['last_hidden_state'])
-            action_std_raw = self.pred_action_log_stds(
+            action_log_stds = self.pred_action_log_stds(
                 transformer_outputs['last_hidden_state'])
-            
-            # Scaled softplus exactly like robomimic
-            action_stds = F.softplus(action_std_raw)
-            action_stds = action_stds * (self.init_std / F.softplus(torch.zeros(1, device=action_std_raw.device)))
-            action_stds = torch.clamp(action_stds, min=self.std_limits[0], max=self.std_limits[1])
-            
-            # Low noise eval (like robomimic)
+            action_stds = action_log_stds.exp()
             if not self.training and self.low_noise_eval:
                 action_stds = torch.ones_like(action_stds) * 1e-4
-            
-            # Clamp and tanh the mean to ensure actions in [-1, 1]
-            action_means = torch.clamp(action_means, -MEAN_CLAMP, MEAN_CLAMP)
-            if not self.tanh_action:
-                action_means = torch.tanh(action_means)
-            
-            # Use Independent wrapper for proper log_prob computation
-            dist = Independent(Normal(action_means, action_stds), 1)
-            
+            dist = torch.distributions.Normal(action_means, action_stds)
             if self.tanh_action:
                 dist = TransformedDistribution(dist, TanhTransform())
             return dist, value_preds
         preds = self.pred_actions(transformer_outputs['last_hidden_state']) # B x T x A
         return preds, value_preds
     
-    def get_action(self, current_state, states, actions, rewards, dones, return_transformer_outputs=False):
+    def get_action(self, current_state, states, actions, rewards, dones, goals, return_transformer_outputs=False):
         # return_value = False
         # return self.debug_mlp(current_state)  # B x D -> B x A
         if states is None: # current_state is B x D
@@ -524,6 +507,7 @@ class DecisionTransformer(nn.Module):
             input_actions = torch.zeros(current_state.shape[0], 1, self.action_dim).to(device)
             input_rewards = torch.zeros(current_state.shape[0], 1).to(device)
             input_dones = torch.zeros(current_state.shape[0], 1).to(device)
+            input_goals = torch.zeros(current_state.shape[0], 1, 2).to(device)
         else: # states is B x T x D, actions is B x T x A, rewards is B x T, dones is B x T, current_state is B x D
             input_states = torch.cat([
                 states, current_state.unsqueeze(1)
@@ -540,13 +524,22 @@ class DecisionTransformer(nn.Module):
                 torch.zeros(states.shape[0], 1).to(device),
                 dones,
             ], dim=1) # B x (T+1)
+            # input_goals = torch.cat([
+            #     torch.zeros(states.shape[0], 1, 2).to(device),
+            #     goals,
+            # ], dim=1) # B x (T+1) x latent_dim
+            input_goals = goals
 
             input_states = input_states[:, -self.horizon:, :]  # Keep only the last horizon states
             input_actions = input_actions[:, -self.horizon:, :]
             input_rewards = input_rewards[:, -self.horizon:]
             input_dones = input_dones[:, -self.horizon:]
+            input_goals = input_goals[:, -self.horizon:, :]
         
-        inputs = torch.cat([input_states, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1)], dim=2)
+        goal_embeds = self.goal_encoder(input_goals)
+        state_embeds = self.state_encoder(input_states)
+
+        inputs = torch.cat([state_embeds, input_actions, input_rewards.unsqueeze(-1), input_dones.unsqueeze(-1), goal_embeds], dim=2)
         inputs = self.embed_transition(inputs)
         inputs = self.embed_ln(inputs)
         transformer_outputs = self.transformer(inputs_embeds=inputs)
@@ -555,29 +548,19 @@ class DecisionTransformer(nn.Module):
             hidden = transformer_outputs['last_hidden_state']
             action_weights = self.pred_action_weights(hidden)[:, -1, :]
             action_means = self.pred_action_means(hidden)[:, -1, :]
-            action_std_raw = self.pred_action_log_stds(hidden)[:, -1, :]
+            action_log_stds = self.pred_action_log_stds(hidden)[:, -1, :]
             B, _ = action_means.shape
             K = self.gmm_heads
             D = self.action_dim
-            action_means = action_means.reshape(B, K, D)
-            action_std_raw = action_std_raw.reshape(B, K, D)
-            
-            # Scaled softplus exactly like robomimic
-            action_stds = F.softplus(action_std_raw)
-            action_stds = action_stds * (self.init_std / F.softplus(torch.zeros(1, device=action_std_raw.device)))
-            action_stds = torch.clamp(action_stds, min=self.std_limits[0], max=self.std_limits[1])
-            
-            if not self.training and self.low_noise_eval:
-                action_stds = torch.ones_like(action_stds) * 1e-4
-            
-            # Clamp and tanh the mean
-            action_means = torch.clamp(action_means, -MEAN_CLAMP, MEAN_CLAMP)
-            if not self.tanh_action:
-                action_means = torch.tanh(action_means)
-            
+            action_means    = action_means.reshape(B, K, D)
+            action_log_stds = action_log_stds.reshape(B, K, D)
+            LOG_SIG_MIN = -20.0
+            LOG_SIG_MAX =  20.0
+            action_log_stds = action_log_stds.clamp(min=LOG_SIG_MIN, max=LOG_SIG_MAX)
+            action_stds = action_log_stds.exp()
             mixture = torch.distributions.Categorical(logits=action_weights)
-            components = Independent(
-                Normal(loc=action_means, scale=action_stds),  # batch: [B, K], event: D
+            components = torch.distributions.Independent(
+                torch.distributions.Normal(loc=action_means, scale=action_stds),  # batch: [B, T, K], event: D
                 1
             )
             dist = torch.distributions.MixtureSameFamily(mixture, components)
@@ -589,26 +572,9 @@ class DecisionTransformer(nn.Module):
         if self.continuous_action:
             action_means = self.pred_action_means(
                 transformer_outputs['last_hidden_state'])[:, -1, :]
-            action_std_raw = self.pred_action_log_stds(
+            action_log_stds = self.pred_action_log_stds(
                 transformer_outputs['last_hidden_state'])[:, -1, :]
-            
-            # Scaled softplus exactly like robomimic
-            action_stds = F.softplus(action_std_raw)
-            action_stds = action_stds * (self.init_std / F.softplus(torch.zeros(1, device=action_std_raw.device)))
-            action_stds = torch.clamp(action_stds, min=self.std_limits[0], max=self.std_limits[1])
-            
-            # Low noise eval
-            if not self.training and self.low_noise_eval:
-                action_stds = torch.ones_like(action_stds) * 1e-4
-            
-            # Clamp and tanh the mean
-            action_means = torch.clamp(action_means, -MEAN_CLAMP, MEAN_CLAMP)
-            if not self.tanh_action:
-                action_means = torch.tanh(action_means)
-            
-            # Use Independent wrapper
-            dist = Independent(Normal(action_means, action_stds), 1)
-            
+            dist = torch.distributions.Normal(action_means, action_log_stds.exp())
             if self.tanh_action:
                 dist = TransformedDistribution(dist, TanhTransform())
             if return_transformer_outputs:
@@ -619,6 +585,9 @@ class DecisionTransformer(nn.Module):
             return preds[:, -1, :], transformer_outputs['last_hidden_state'][:, -1, :]
         return preds[:, -1, :]  # Return the last action
 
+    def get_encoder_loss(self, x):
+        goals = x['goals'].to(device)
+        return self.goal_encoder.compute_encoder_loss(goals)
 
 class DecisionTransformerCnn(nn.Module):
     """Decision Transformer with image/grid encoder for observations.

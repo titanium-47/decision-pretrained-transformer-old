@@ -96,7 +96,7 @@ class MazeEnv:
                            for x in range(self.wd) if nav[y, x]]
 
         self.observation_space = spaces.Box(
-            -1, 1, (self.visibility, self.visibility, 3), np.float32)
+            low=0.0, high=float(self.wd - 1), shape=(2,), dtype=np.float32)
         self.action_space = spaces.Discrete(N_ACT)
 
         self.agent_pos = None
@@ -125,29 +125,8 @@ class MazeEnv:
         return self._obs(), reward, done, self._info()
 
     def _obs(self):
-        v = self.visibility
-        obs = np.full((v, v, 3), -1.0, dtype=np.float32)
         ax, ay = self.agent_pos
-        gx, gy = self.goal_pos
-
-        # Full-grid mode: visibility == world size, no agent-centered crop.
-        if v == self.wd:
-            obs[:, :, 0] = np.where(self.nav, 0.0, 1.0)
-            obs[gy, gx, 1] = 1.0
-            obs[ay, ax, 2] = 1.0
-            return obs
-
-        half = v // 2
-        for oy in range(v):
-            for ox in range(v):
-                dx, dy = ox - half, oy - half
-                wx, wy = ax + dx, ay + dy
-                if 0 <= wx < self.wd and 0 <= wy < self.wd:
-                    obs[oy, ox, 0] = 0.0 if self.nav[wy, wx] else 1.0
-                    obs[oy, ox, 1] = 1.0 if (wx == gx and wy == gy) else 0.0
-                    obs[oy, ox, 2] = 1.0 if (wx == ax and wy == ay) else 0.0
-        # obs = _render_grid_obs(obs, cell_px=40)  # (v*40, v*40, 3) uint8
-        return obs
+        return np.array([ax, ay], dtype=np.float32)
 
     def _info(self):
         ax, ay = self.agent_pos
