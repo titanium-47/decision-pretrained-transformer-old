@@ -76,12 +76,12 @@ def load_maze_and_goals(maze_path, train_ratio=0.8, seed=42):
     wd = nav.shape[0]
     free = [(x, y) for y in range(wd) for x in range(wd) if nav[y, x]]
     np.random.seed(seed)
-    # idxs = np.random.permutation(len(free))
-    # n_train = int(len(free) * train_ratio)
-    # train_goals = [free[i] for i in idxs[:n_train]]
-    # eval_goals = [free[i] for i in idxs[n_train:]]
-    train_goals = free
-    eval_goals = free
+    idxs = np.random.permutation(len(free))
+    n_train = int(len(free) * train_ratio)
+    train_goals = [free[i] for i in idxs[:n_train]]
+    eval_goals = [free[i] for i in idxs[n_train:]]
+    # train_goals = free
+    # eval_goals = free
     return nav, train_goals, eval_goals
 
 
