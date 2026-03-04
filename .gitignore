@@ -25,3 +25,4 @@ aawr_test_results
 maze_debug_videos
 maze_dumps
 maze.npy
+launch.json
