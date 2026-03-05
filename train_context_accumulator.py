@@ -865,8 +865,8 @@ if __name__ == "__main__":
         (0, 0),
         (25, 50),
         (50, 100),
-        (100, 200),
-        (200, 400)
+        (100, 200)
+        # (200, 400)
     ]
 
     sampling_ratio_curriculum = [
@@ -889,9 +889,10 @@ if __name__ == "__main__":
             #   f"(expert_p={expert_p:.3f})")
         # print step, exploration steps range, sampling ratio, lr
         print(f"DAgger Step {step_idx}/{args.dagger_steps}")
-        print(f"Exploration steps range: {exploration_steps_curriculum[step_idx]}")
-        print(f"Sampling ratio: {sampling_ratio_curriculum[step_idx]}")
-        print(f"Learning rate: {lr_curriculum[step_idx]:.2e}")
+        steps_idx = min(step_idx, len(exploration_steps_curriculum) - 1)
+        print(f"Exploration steps range: {exploration_steps_curriculum[steps_idx]}")
+        print(f"Sampling ratio: {sampling_ratio_curriculum[steps_idx]}")
+        print(f"Learning rate: {lr_curriculum[steps_idx]:.2e}")
         print(f"{'=' * 60}")
 
         # 1. Collect data
@@ -905,7 +906,7 @@ if __name__ == "__main__":
             n_trajs=args.dataset_size,
             eval_policy=data_collection_policy,
             # expert_p=expert_p,
-            exploration_steps_range=exploration_steps_curriculum[step_idx]
+            exploration_steps_range=exploration_steps_curriculum[steps_idx]
         )
         current_train_trajs, current_val_trajs = split_trajectories(
             all_trajs, train_ratio=0.8, seed=args.seed + step_idx
@@ -922,7 +923,7 @@ if __name__ == "__main__":
         print(f"Split -> train: {len(current_train_dataset)}, "
               f"val: {len(current_val_dataset)}")
 
-        sampling_ratio = sampling_ratio_curriculum[step_idx]
+        sampling_ratio = sampling_ratio_curriculum[steps_idx]
         print(f"Sampling ratio for training: {sampling_ratio}")
 
         if args.log_wandb:
@@ -976,7 +977,7 @@ if __name__ == "__main__":
 
         # 2. Train
         total_steps = (len(train_dataset.weights) * args.num_epochs) // args.batch_size
-        optimizer, scheduler = get_optimizer_scheduler(model, total_steps, lr_curriculum[step_idx], args.warmup_ratio)
+        optimizer, scheduler = get_optimizer_scheduler(model, total_steps, lr_curriculum[steps_idx], args.warmup_ratio)
 
         model = train_step(
             step_idx, model, optimizer, scheduler,
