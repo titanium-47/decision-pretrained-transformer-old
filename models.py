@@ -11,6 +11,16 @@ from torch.distributions import TransformedDistribution, TanhTransform, Normal, 
 # Constants (following robomimic exactly)
 MEAN_CLAMP = 9.0     # mean_limits=(-9.0, 9.0)
 
+
+class _IdentitySequenceEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim):
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+
+    def forward(self, x):
+        return x
+
 def get_model(model_type, horizon, state_dim, action_dim, continuous_action, gmm_heads=1):
     n_embd = 256
     n_head = 4
@@ -675,8 +685,20 @@ class DecisionTransformerCnn(nn.Module):
             self.obs_proj,
             nn.ReLU(),
         )
+        self.goal_encoder, self.goal_latent_dim = self._build_pos_encoder(
+            config=config,
+            config_key="encoder",
+            input_dim=2,
+            default_latent_dim=2,
+        )
+        self.state_encoder, self.state_latent_dim = self._build_pos_encoder(
+            config=config,
+            config_key="state_encoder",
+            input_dim=2,
+            default_latent_dim=2,
+        )
         self.pos_encoder = nn.Sequential(
-            nn.Linear(4, config['n_embd']),
+            nn.Linear(self.state_latent_dim + self.goal_latent_dim, config['n_embd']),
             nn.ReLU(),
         )
         self.state_pos_fuse = nn.Linear(2 * config['n_embd'], config['n_embd'])
@@ -695,13 +717,59 @@ class DecisionTransformerCnn(nn.Module):
         self.action_dim = action_dim
         self.n_embd = n_embd
 
+    def _build_pos_encoder(self, config, config_key, input_dim, default_latent_dim):
+        encoder_cfg = config.get(config_key)
+        if encoder_cfg is None:
+            return _IdentitySequenceEncoder(input_dim=input_dim, latent_dim=default_latent_dim), default_latent_dim
+
+        required_keys = ("class", "input_dim", "latent_dim")
+        missing = [k for k in required_keys if k not in encoder_cfg]
+        if missing:
+            raise ValueError(
+                f"Missing keys {missing} in config['{config_key}']; required keys are {required_keys}."
+            )
+        encoder_cls = encoder_cfg["class"]
+        encoder_kwargs = encoder_cfg.get("kwargs", {})
+        encoder = encoder_cls(
+            encoder_cfg["input_dim"],
+            encoder_cfg["latent_dim"],
+            **encoder_kwargs,
+        )
+        return encoder, encoder_cfg["latent_dim"]
+
     def _normalize_and_embed_pos(self, agent_pos, goal_pos):
         ax = agent_pos[..., 0] / self.pos_x_denom
         ay = agent_pos[..., 1] / self.pos_y_denom
         gx = goal_pos[..., 0] / self.pos_x_denom
         gy = goal_pos[..., 1] / self.pos_y_denom
-        pos = torch.stack([ax, ay, gx, gy], dim=-1)
+        state_xy = torch.stack([ax, ay], dim=-1)
+        goal_xy = torch.stack([gx, gy], dim=-1)
+        state_embeds = self._encode_sequence(
+            self.state_encoder, state_xy, self.state_latent_dim, "state_encoder"
+        )
+        goal_embeds = self._encode_sequence(
+            self.goal_encoder, goal_xy, self.goal_latent_dim, "goal_encoder"
+        )
+        pos = torch.cat([state_embeds, goal_embeds], dim=-1)
         return self.pos_encoder(pos)
+
+    def _encode_sequence(self, encoder, x, latent_dim, encoder_name):
+        encoded = encoder(x)
+        if encoded.dim() == 3:
+            return encoded
+        if encoded.dim() != 2:
+            raise ValueError(
+                f"{encoder_name} must return rank-2 or rank-3 tensor, got rank {encoded.dim()}."
+            )
+
+        bsz, seq_len = x.shape[:2]
+        if encoded.shape[0] == bsz * seq_len:
+            return encoded.reshape(bsz, seq_len, -1)
+        if encoded.shape[0] == bsz:
+            return encoded.unsqueeze(1).expand(-1, seq_len, -1)
+        raise ValueError(
+            f"{encoder_name} returned invalid shape {tuple(encoded.shape)} for input shape {tuple(x.shape)}."
+        )
 
     def forward(self, x, **kwargs):
         B,T = x['states'].shape[0], x['states'].shape[1]
@@ -745,7 +813,7 @@ class DecisionTransformerCnn(nn.Module):
         inputs = self.embed_transition(inputs_)
         inputs = self.embed_ln(inputs)
 
-        transformer_outputs = self.transformer(inputs_embeds=inputs)
+        transformer_outputs = self.transformer(inputs_embeds=inputs, use_cache=False)
         preds = self.pred_actions(transformer_outputs['last_hidden_state']) # B x T x A
         return preds
 
@@ -764,10 +832,11 @@ class DecisionTransformerCnn(nn.Module):
         inputs_ = torch.cat([states, actions], dim=2)
         inputs = self.embed_transition(inputs_)
         inputs = self.embed_ln(inputs)
-        transformer_outputs = self.transformer(inputs_embeds=inputs, attention_mask=attention_mask)
+        transformer_outputs = self.transformer(inputs_embeds=inputs, attention_mask=attention_mask, use_cache=False)
         preds = self.pred_actions(transformer_outputs['last_hidden_state']) # B x T x A
         seq_len = attention_mask.sum(dim=1).long()  # [B]
         last_preds = preds[torch.arange(B, device=preds.device), seq_len - 1]  # [B, A]
+        # last_preds = preds.squeeze(1)
         return last_preds
 
 

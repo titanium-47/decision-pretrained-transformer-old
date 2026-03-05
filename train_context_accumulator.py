@@ -17,6 +17,7 @@ import argparse
 import os
 import pickle
 import random
+from importlib import import_module
 from collections import defaultdict
 
 import numpy as np
@@ -30,6 +31,7 @@ from PIL import Image
 from get_rollout_policy import TransformerCNNPolicy
 from models import DecisionTransformerCnn
 from maze_env import make_maze_envs, _render_grid_obs
+from encoders import *
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +755,33 @@ if __name__ == "__main__":
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--n_embd", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--encoder_type",
+        type=str,
+        default="noop",
+        choices=[
+            "information_bottleneck",
+            "deterministic",
+            "null",
+            "diffusion_forward_noise",
+            "noop",
+            "batch_norm",
+        ],
+    )
+    parser.add_argument(
+        "--state_encoder_type",
+        type=str,
+        default="noop",
+        choices=[
+            "information_bottleneck",
+            "deterministic",
+            "null",
+            "diffusion_forward_noise",
+            "noop",
+            "batch_norm",
+        ],
+    )
+    parser.add_argument("--alpha", type=float, default=1.0)
 
     # Training
     parser.add_argument("--batch_size", type=int, default=64)
@@ -827,6 +856,21 @@ if __name__ == "__main__":
     # Model
     # ------------------------------------------------------------------
     model_horizon = 2 * env_horizon
+    encoder_class_map = {
+        "information_bottleneck": GoalInformationBottleneckEncoder,
+        "deterministic": GoalDeterministicEncoder,
+        "null": NullEncoder,
+        "diffusion_forward_noise": DiffusionForwardNoiseEncoder,
+        "noop": NoOpEncoder,
+        "batch_norm": BatchNormEncoder,
+    }
+    encoder_kwargs = {}
+    if args.encoder_type == "diffusion_forward_noise":
+        encoder_kwargs["alpha"] = args.alpha
+    state_encoder_kwargs = {}
+    if args.state_encoder_type == "diffusion_forward_noise":
+        state_encoder_kwargs["alpha"] = args.alpha
+
     model_args = {
         "horizon": model_horizon,
         "obs": obs_shape,          # (H, W, C)
@@ -837,6 +881,18 @@ if __name__ == "__main__":
         "dropout": args.dropout,
         "shuffle": True,
         "test": False,
+        "encoder": {
+            "class": encoder_class_map[args.encoder_type],
+            "input_dim": 2,
+            "latent_dim": 2,
+            "kwargs": encoder_kwargs,
+        },
+        "state_encoder": {
+            "class": encoder_class_map[args.state_encoder_type],
+            "input_dim": 2,
+            "latent_dim": 2,
+            "kwargs": state_encoder_kwargs,
+        },
     }
     with open(os.path.join(save_dir, "model_args.pkl"), "wb") as f:
         pickle.dump(model_args, f)
