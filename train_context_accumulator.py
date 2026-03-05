@@ -46,7 +46,8 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
     * Runs one batch of parallel episodes up to *eval_horizon* steps.
     * Records per-env videos with two side-by-side panels:
       partial obs (rendered grid) | full RGB frame.
-    * Returns (mean_return, std_return) across environments.
+    * Returns (mean_return, std_return, success_rate, mean_steps_to_goal)
+      across environments.
     """
     import imageio_ffmpeg
 
@@ -60,6 +61,7 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
     done_flag = np.zeros(n, dtype=bool)
     episode_rewards = np.zeros(n, dtype=np.float32)
     successes = np.zeros(n, dtype=bool)
+    successful_steps_to_goal = np.full(n, np.nan, dtype=np.float32)
     # each frame is (partial_rgb, full_rgb) – both uint8
     episode_frames = [[] for _ in range(n)]
 
@@ -96,6 +98,7 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
                 pbar.update(1)
                 if rewards[i] > 0:
                     successes[i] = True
+                    successful_steps_to_goal[i] = t + 1
 
         if done_flag.all():
             break
@@ -126,7 +129,12 @@ def evaluate_policy_on_envs_procgen(eval_envs, policy, eval_horizon,
     mean_ret = float(np.mean(episode_rewards))
     std_ret = float(np.std(episode_rewards))
     success_rate = float(np.mean(successes))
-    return mean_ret, std_ret, success_rate
+    mean_steps_to_goal = (
+        float(np.mean(successful_steps_to_goal[successes]))
+        if np.any(successes)
+        else float("nan")
+    )
+    return mean_ret, std_ret, success_rate, mean_steps_to_goal
 
 # ---------------------------------------------------------------------------
 #  Dataset
@@ -1004,7 +1012,7 @@ if __name__ == "__main__":
         # 4. Evaluate
         eval_save_dir = os.path.join(
             save_dir, f"dagger_step_{step_idx}", "eval")
-        mean_ret, std_ret, success_rate = evaluate_policy_on_envs_procgen(
+        mean_ret, std_ret, success_rate, mean_steps_to_goal = evaluate_policy_on_envs_procgen(
             eval_envs=eval_env,
             # eval_envs=train_env,  # evaluate on training envs to see improvement across steps
             policy=eval_policy,
@@ -1015,6 +1023,8 @@ if __name__ == "__main__":
         )
 
         print(f"Eval return: {mean_ret:.2f} ± {std_ret:.2f}")
+        print(f"Eval success rate: {success_rate:.2%}")
+        print(f"Eval steps to reach goal: {mean_steps_to_goal:.2f}")
 
         ## Low temp eval
         eval_policy_low_temp = TransformerCNNPolicy(
@@ -1022,7 +1032,7 @@ if __name__ == "__main__":
             context_horizon=model_horizon,
             temp=0.1
         )
-        mean_ret_low, std_ret_low, success_rate_low = evaluate_policy_on_envs_procgen(
+        mean_ret_low, std_ret_low, success_rate_low, mean_steps_to_goal_low = evaluate_policy_on_envs_procgen(
             eval_envs=eval_env,
             policy=eval_policy_low_temp,
             eval_horizon=env_horizon,
@@ -1031,6 +1041,8 @@ if __name__ == "__main__":
             eval_name="temp_0.1",
         )
         print(f"Low-temp eval return: {mean_ret_low:.2f} ± {std_ret_low:.2f}")
+        print(f"Low-temp eval success rate: {success_rate_low:.2%}")
+        print(f"Low-temp eval steps to reach goal: {mean_steps_to_goal_low:.2f}")
 
         if args.log_wandb:
             eval_payload = {
@@ -1041,12 +1053,16 @@ if __name__ == "__main__":
                     std_ret,
                 "eval/temp_1.0_success_rate":
                     success_rate,
+                "eval/temp_1.0_steps_to_reach_goal":
+                    mean_steps_to_goal,
                 "eval/temp_0.1_mean_return":
                     mean_ret_low,
                 "eval/temp_0.1_std_return":
                     std_ret_low,
                 "eval/temp_0.1_success_rate":
                     success_rate_low,
+                "eval/temp_0.1_steps_to_reach_goal":
+                    mean_steps_to_goal_low,
                 # f"eval/curriculum_exploration_min":
                 #     exploration_steps_curriculum[step_idx][0],
                 # f"step{step_idx}_eval/curriculum_exploration_max":
