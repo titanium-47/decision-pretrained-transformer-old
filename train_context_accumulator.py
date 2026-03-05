@@ -10,7 +10,7 @@ At each iteration:
 
 import torch.multiprocessing as mp
 
-from encoders import GoalDeterministicEncoder, GoalInformationBottleneckEncoder, NullEncoder, DiffusionForwardNoiseEncoder
+from encoders import GoalDeterministicEncoder, GoalInformationBottleneckEncoder, NullEncoder, DiffusionForwardNoiseEncoder, FourierEncoder, NoOpEncoder
 
 if mp.get_start_method(allow_none=True) is None:
     mp.set_start_method("spawn", force=True)
@@ -293,9 +293,10 @@ if __name__ == "__main__":
     
     # Paths
     parser.add_argument("--save_dir", type=str, default="./context_results")
-    parser.add_argument("--encoder_type", type=str, choices=["information_bottleneck", "deterministic", "diffusion_forward_noise", "null"], default="diffusion_forward_noise")
+    parser.add_argument("--encoder_type", type=str, choices=["information_bottleneck", "deterministic", "diffusion_forward_noise", "null", "fourier", "no_op"], default="fourier")
     parser.add_argument("--kl_loss_weight", type=float, default=100.0)
-    parser.add_argument("--state_encoder_type", type=str, choices=["diffusion_forward_noise", "null"], default="diffusion_forward_noise")
+    parser.add_argument("--state_encoder_type", type=str, choices=["diffusion_forward_noise", "null", "fourier", "no_op"], default="no_op")
+    parser.add_argument("--alpha", type=float, default=0.8)
 
     args = parser.parse_args()
 
@@ -322,7 +323,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
     
     # Save directory
-    save_dir = os.path.join(args.save_dir, f"{args.exp_name}-{args.env_name}-seed{args.seed}-side-ood-kl-{args.kl_loss_weight}")
+    save_dir = os.path.join(args.save_dir, f"{args.exp_name}-{args.env_name}-seed{args.seed}-{args.alpha}")
     os.makedirs(save_dir, exist_ok=True)
 
     # Create environments
@@ -341,7 +342,9 @@ if __name__ == "__main__":
         'information_bottleneck': GoalInformationBottleneckEncoder,
         'deterministic': GoalDeterministicEncoder,
         'null': NullEncoder,
-        'diffusion_forward_noise': DiffusionForwardNoiseEncoder
+        'diffusion_forward_noise': DiffusionForwardNoiseEncoder,
+        'fourier': FourierEncoder,
+        'no_op': NoOpEncoder,
     }
     model_args = {
         "horizon": model_horizon,
@@ -358,12 +361,16 @@ if __name__ == "__main__":
         'encoder': {
             'class': encoder_class_map[args.encoder_type],
             'input_dim': 2,
-            'latent_dim': 2,
+            'latent_dim': 8,
+            'kwargs': {
+            },
         },
         'state_encoder': {
             'class': encoder_class_map[args.state_encoder_type],
             'input_dim': state_dim,
             'latent_dim': state_dim,
+            'kwargs': {
+            },
         },
     }
     
@@ -486,7 +493,8 @@ if __name__ == "__main__":
         print(f"Evaluation complete - Final return: {eval_results['mean_returns'][-1]:.2f} ± {eval_results['std_returns'][-1]:.2f}")
         
         # Prepare for next step
-        current_horizon = env_horizon * (min(step_idx, 2) + 2) 
+        # current_horizon = env_horizon * (min(step_idx, 2) + 2) 
+        current_horizon = env_horizon * (step_idx + 2)
         
         # Create policy for data collection
         step_policy = get_rollout_policy(

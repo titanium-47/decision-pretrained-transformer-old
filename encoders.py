@@ -150,3 +150,23 @@ class DiffusionForwardNoiseEncoder(Encoder):
 
     def compute_encoder_loss(self, x):
         return torch.tensor(0.0, device=x.device)
+class FourierEncoder(Encoder):
+    def __init__(self, input_dim, latent_dim, num_freqs=2, scale=1.0/9.0):
+        super().__init__(input_dim, latent_dim)
+        self.fourier = FourierFeatures2D(num_freqs=num_freqs, scale=scale)
+    
+    def forward(self, x, eps=None):
+        return self.fourier(x)
+    
+    def compute_encoder_loss(self, x):
+        return torch.tensor(0.0, device=x.device)
+
+class NoOpEncoder(Encoder):
+    def __init__(self, input_dim, latent_dim):
+        super().__init__(input_dim, latent_dim)
+    
+    def forward(self, x, eps=None):
+        return x
+    
+    def compute_encoder_loss(self, x):
+        return torch.tensor(0.0, device=x.device)

@@ -3,7 +3,7 @@
 # Edit the KL_WEIGHTS array below to set which values to sweep.
 
 # Configure kl_loss_weight values to sweep (one run per value)
-KL_WEIGHTS=(100.0)
+KL_WEIGHTS=(1.0)
 
 # Optional: pass through any extra args to the training script (e.g. --exp_name my_run)
 # Either pass on the command line: ./run_kl_sweep.sh --log_wandb --wandb_project kl-sweep-brightroom
@@ -12,9 +12,9 @@ EXTRA_ARGS=("$@")
 
 for kl in "${KL_WEIGHTS[@]}"; do
   echo "=========================================="
-  echo "Running with --kl_loss_weight ${kl}"
+  echo "Running with --alpha ${kl}"
   echo "=========================================="
-  python train_context_accumulator.py --log_wandb --wandb_project kl-sweep-brightroom --kl_loss_weight "${kl}" "${EXTRA_ARGS[@]}"
+  python train_context_accumulator.py --exp_name fourier --log_wandb --wandb_project diffusion-forward-noise-brightroom --alpha "${kl}" "${EXTRA_ARGS[@]}"
   echo ""
 done
 

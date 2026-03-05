@@ -8,6 +8,7 @@ import pathlib
 import pickle
 import random
 
+import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -119,6 +120,7 @@ def evaluate_goal_grid(
     context_horizon,
     sliding_window,
     value_mode,
+    trajectory_goal=None,
 ):
     policy = get_rollout_policy(
         "decision_transformer",
@@ -133,11 +135,22 @@ def evaluate_goal_grid(
     dim = int(np.sqrt(len(goals)))
     heatmap = np.full((dim, dim), np.nan, dtype=np.float32)
     all_episode_returns = np.full((dim, dim, eval_episodes), 0.0, dtype=np.float32)
+    goal_trajectory_states = None
+    goal_to_index = {goal: idx for idx, goal in enumerate(goals)}
+    target_goal_idx = goal_to_index.get(tuple(trajectory_goal)) if trajectory_goal is not None else None
 
     rewards_batches = []
-    for vec_env in tqdm.tqdm(vec_envs, desc="Collecting on-policy rollouts"):
+    for vec_env, batch_goal_idx in tqdm.tqdm(
+        zip(vec_envs, batch_goal_indices),
+        total=len(vec_envs),
+        desc="Collecting on-policy rollouts",
+    ):
         rollout_data = dagger_rollout(vec_env, policy, eval_horizon)
         rewards_batches.append(rollout_data["rewards"])
+        if target_goal_idx is not None and goal_trajectory_states is None:
+            matches = np.where(batch_goal_idx == target_goal_idx)[0]
+            if matches.size > 0:
+                goal_trajectory_states = rollout_data["states"][int(matches[0])].copy()
     rewards = np.concatenate(rewards_batches, axis=0)
     episode_returns, _, _ = compute_episode_returns(rewards, env_horizon)
 
@@ -169,7 +182,7 @@ def evaluate_goal_grid(
     for goal_idx, (x, y) in enumerate(goals):
         heatmap[y, x] = goal_scalar_mean[goal_idx]
         all_episode_returns[y, x, :] = goal_episode_mean[goal_idx]
-    return heatmap, all_episode_returns
+    return heatmap, all_episode_returns, goal_trajectory_states
 
 
 def plot_heatmap(heatmap, output_path, title, value_mode, eval_episodes, annotate_cells=False):
@@ -197,6 +210,77 @@ def plot_heatmap(heatmap, output_path, title, value_mode, eval_episodes, annotat
     plt.close(fig)
 
 
+def save_goal_exploration_animation(
+    trajectory_states,
+    target_goal,
+    env_horizon,
+    eval_episodes,
+    output_path,
+    max_episodes=40,
+):
+    if trajectory_states is None:
+        print(f"Goal {tuple(target_goal)} trajectory not found; skipping animation.")
+        return
+
+    if trajectory_states.ndim != 2 or trajectory_states.shape[1] != 2:
+        raise ValueError(f"Expected states with shape (T, 2), got {trajectory_states.shape}")
+
+    total_episodes = min(max_episodes, eval_episodes, trajectory_states.shape[0] // env_horizon)
+    if total_episodes <= 0:
+        print("No full episodes available for goal animation; skipping.")
+        return
+
+    clipped = trajectory_states[: total_episodes * env_horizon]
+    episode_states = clipped.reshape(total_episodes, env_horizon, 2)
+    goal = np.array(target_goal, dtype=np.float32)
+
+    max_coord = int(max(np.max(episode_states), np.max(goal)))
+    grid_dim = max_coord + 1
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_xlim(-0.5, grid_dim - 0.5)
+    ax.set_ylim(-0.5, grid_dim - 0.5)
+    ax.set_xticks(np.arange(grid_dim))
+    ax.set_yticks(np.arange(grid_dim))
+    ax.grid(True, alpha=0.25)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+
+    goal_marker = ax.scatter([goal[0]], [goal[1]], c="red", marker="*", s=160, label="Goal", zorder=4)
+    trail_line, = ax.plot([], [], color="tab:blue", linewidth=2, alpha=0.85, label="Path", zorder=2)
+    current_marker = ax.scatter([], [], c="tab:orange", s=55, label="Agent", zorder=5)
+    start_marker = ax.scatter([], [], c="black", marker="x", s=45, label="Episode start", zorder=5)
+    ax.legend(loc="upper left")
+
+    total_frames = total_episodes * env_horizon
+
+    def _update(frame_idx):
+        ep_idx = frame_idx // env_horizon
+        step_idx = frame_idx % env_horizon
+        path = episode_states[ep_idx, : step_idx + 1]
+        trail_line.set_data(path[:, 0], path[:, 1])
+        current_marker.set_offsets(path[-1])
+        start_marker.set_offsets(episode_states[ep_idx, 0])
+        ax.set_title(
+            f"Goal ({int(goal[0])}, {int(goal[1])}) | "
+            f"Episode {ep_idx + 1}/{total_episodes} | Step {step_idx + 1}/{env_horizon}"
+        )
+        return trail_line, current_marker, start_marker, goal_marker
+
+    anim = animation.FuncAnimation(
+        fig,
+        _update,
+        frames=total_frames,
+        interval=120,
+        blit=False,
+        repeat=False,
+    )
+    anim.save(output_path, writer=animation.FFMpegWriter(fps=10, bitrate=1800))
+    plt.close(fig)
+    print(f"Saved goal exploration animation: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot darkroom goal return heatmap")
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Checkpoint directory or .pth file")
@@ -221,6 +305,10 @@ def main():
         default=0,
         help="Vectorized env batch size. <=0 means run all goal replicas in one giant vec env.",
     )
+    parser.add_argument("--animate_goal_x", type=int, default=9, help="Goal x coordinate for trajectory animation")
+    parser.add_argument("--animate_goal_y", type=int, default=9, help="Goal y coordinate for trajectory animation")
+    parser.add_argument("--animate_episodes", type=int, default=40, help="How many episodes to animate")
+    parser.add_argument("--disable_goal_animation", action="store_true", help="Disable goal trajectory animation export")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -247,7 +335,8 @@ def main():
         # Match train_context_accumulator eval behavior where current_horizon is capped at 4 episodes.
         context_horizon = min(model_args["horizon"], 4 * env_horizon)
 
-    heatmap, all_episode_returns = evaluate_goal_grid(
+    target_goal = (args.animate_goal_x, args.animate_goal_y)
+    heatmap, all_episode_returns, goal_trajectory_states = evaluate_goal_grid(
         model=model,
         vec_envs=vec_envs,
         goals=goals,
@@ -258,11 +347,16 @@ def main():
         context_horizon=context_horizon,
         sliding_window=args.sliding_window,
         value_mode=args.value_mode,
+        trajectory_goal=target_goal,
     )
 
     heatmap_path = os.path.join(args.output_dir, "darkroom_goal_returns_heatmap.png")
     heatmap_npy_path = os.path.join(args.output_dir, "darkroom_goal_returns.npy")
     heatmap_npz_path = os.path.join(args.output_dir, "darkroom_goal_returns.npz")
+    goal_animation_path = os.path.join(
+        args.output_dir,
+        f"darkroom_goal_{target_goal[0]}_{target_goal[1]}_episodes_{min(args.animate_episodes, args.eval_episodes)}_exploration.mp4",
+    )
 
     title = (
         f"Darkroom 10x10 Goal Returns ({args.value_mode})\n"
@@ -294,6 +388,16 @@ def main():
         goal_repeats=args.goal_repeats,
         n_envs_per_batch=args.n_envs_per_batch,
     )
+
+    if not args.disable_goal_animation:
+        save_goal_exploration_animation(
+            trajectory_states=goal_trajectory_states,
+            target_goal=target_goal,
+            env_horizon=env_horizon,
+            eval_episodes=args.eval_episodes,
+            output_path=goal_animation_path,
+            max_episodes=args.animate_episodes,
+        )
 
     print(f"Saved heatmap image: {heatmap_path}")
     print(f"Saved heatmap array: {heatmap_npy_path}")

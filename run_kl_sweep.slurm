@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=klsweep
+#SBATCH --job-name=noise-sweep
 #SBATCH --account=weirdlab
 #SBATCH --partition=gpu-l40
 #SBATCH --gpus=1

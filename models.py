@@ -5,7 +5,7 @@ transformers.set_seed(0)
 from transformers import GPT2Config, GPT2Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 from torch.distributions import TransformedDistribution, TanhTransform
-from encoders import Encoder, GoalInformationBottleneckEncoder, GoalDeterministicEncoder, NullEncoder
+from encoders import Encoder, GoalInformationBottleneckEncoder, GoalDeterministicEncoder, NullEncoder, FourierEncoder
 
 def get_model(model_type, horizon, state_dim, action_dim, continuous_action, encoder_type, gmm_heads=1):
     n_embd = 128
@@ -17,6 +17,7 @@ def get_model(model_type, horizon, state_dim, action_dim, continuous_action, enc
         'information_bottleneck': GoalInformationBottleneckEncoder,
         'deterministic': GoalDeterministicEncoder,
         'null': NullEncoder,
+        'fourier': FourierEncoder,
     }
     config = {
         'horizon': horizon,
@@ -586,8 +587,14 @@ class DecisionTransformer(nn.Module):
         self.state_dim = self.config['state_dim']
         self.action_dim = self.config['action_dim']
         self.dropout = self.config['dropout']
-        self.goal_encoder = self.config['encoder']['class'](self.config['encoder']['input_dim'], self.config['encoder']['latent_dim'])
-        self.state_encoder = self.config['state_encoder']['class'](self.config['state_encoder']['input_dim'], self.config['state_encoder']['latent_dim'])
+        self.goal_encoder = self.config['encoder']['class'](
+            self.config['encoder']['input_dim'], 
+            self.config['encoder']['latent_dim'],
+            **self.config['encoder']['kwargs'])
+        self.state_encoder = self.config['state_encoder']['class'](
+            self.config['state_encoder']['input_dim'], 
+            self.config['state_encoder']['latent_dim'],
+            **self.config['state_encoder']['kwargs'])
 
         gpt_config = GPT2Config(
             n_positions=self.horizon,
