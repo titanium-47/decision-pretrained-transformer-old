@@ -739,7 +739,7 @@ if __name__ == "__main__":
 
     # Data
     parser.add_argument("--dataset_size", type=int, default=1000)
-    parser.add_argument("--dagger_steps", type=int, default=100)
+    parser.add_argument("--dagger_steps", type=int, default=20)
     parser.add_argument("--n_train_envs", type=int, default=16)
     parser.add_argument("--n_eval_envs", type=int, default=100)
     parser.add_argument("--visibility", type=int, default=7,

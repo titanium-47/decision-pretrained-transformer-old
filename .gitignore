@@ -26,3 +26,5 @@ maze_debug_videos
 maze_dumps
 maze.npy
 launch.json
+slurm-*.*
+!run_alpha_sweep.sh
